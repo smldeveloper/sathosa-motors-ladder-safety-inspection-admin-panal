@@ -200,13 +200,13 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => values.push(cell.value instanceof Date ? cell.value.toISOString().slice(0, 10) : String(cell.value ?? '')))));
       assert.ok(values.includes('1234'), 'export contains the matching fixture');
       assert.ok(values.includes('2026-11-04'), 'export preserves calendar date');
-      const sheet = workbook.getWorksheet('Inspection Records');
-      const headings = sheet.getRow(5).values;
+      const sheet = workbook.worksheets[0];
+      const headings = sheet.getRow(mode === 'fire' ? 9 : 5).values;
       const renamedColumn = headings.findIndex(value => String(value).includes('Renamed export question'));
       const addedColumn = headings.findIndex(value => String(value).includes('New export question'));
       assert.ok(addedColumn > 0 && addedColumn < renamedColumn, 'question additions and ordering are dynamic');
-      assert.equal(sheet.getCell(6, renamedColumn).value, 'Bad', 'renamed question retains the saved answer by ID');
-      assert.equal(sheet.getCell(6, addedColumn).value, null, 'new questions have blank historical answers');
+      assert.equal(sheet.getCell(mode === 'fire' ? 10 : 6, renamedColumn).value, 'Bad', 'renamed question retains the saved answer by ID');
+      assert.equal(sheet.getCell(mode === 'fire' ? 10 : 6, addedColumn).value, null, 'new questions have blank historical answers');
       assert.ok(values.includes('Edited question'), 'original question wording is preserved in history');
       assert.equal((await json(`/inspections?mode=${mode}&ladder=does-not-exist`)).length, 0);
     });

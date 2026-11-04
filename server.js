@@ -522,7 +522,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
       ${where}
       order by i.inspection_date, i.created_at, i.id, r.display_order_snapshot, r.id
     `, values);
-    const workbook = buildInspectionWorkbook({ mode, questions, rows });
+    const workbook = await buildInspectionWorkbook({ mode, questions, rows, templatePath: path.join(__dirname, 'fire_extinguisher_template.xlsx') });
     const filenames = { ladder: 'LADDER-CHECKLIST-EXPORT.xlsx', fire: 'FIRE-EXTINGUISHER-CHECKLIST-EXPORT.xlsx', firstaid: 'FIRST-AID-CHECKLIST-EXPORT.xlsx' };
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filenames[mode]}"`);
