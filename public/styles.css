@@ -258,7 +258,7 @@ body {
 /* ─── Question Management ────────────────────────────────── */
 .split {
   display: grid;
-  grid-template-columns: 1fr 380px;
+  grid-template-columns: minmax(0, 1fr) 380px;
   gap: 20px;
   align-items: start;
 }
@@ -316,6 +316,7 @@ tbody td {
 
 /* ─── Editor Form ─────────────────────────────────────────── */
 .editor {
+  min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -377,7 +378,7 @@ tbody td {
 
 .form-grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -408,6 +409,9 @@ tbody td {
   border-top: 1px solid var(--border);
 }
 
+.editor-actions .status-msg { flex-basis: 100%; }
+.editor-actions .status-msg:empty { display: none; }
+
 .status-msg {
   font-size: 0.82rem;
   margin-top: 10px;
@@ -419,22 +423,35 @@ tbody td {
 .status-msg.err { color: var(--fail); }
 
 /* Options editor */
-.options-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
-
+#optionsSection { min-width: 0; }
+.options-column-headings,
 .option-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) 44px 28px;
   gap: 6px;
   align-items: center;
 }
 
+.options-column-headings {
+  color: var(--text-2);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.options-column-headings span:nth-child(3) { text-align: center; }
+.options-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+
+.option-row > * { min-width: 0; }
+
 .option-row input[type="text"] {
-  flex: 1;
+  width: 100%;
   padding: 7px 10px;
   font-family: var(--font);
   font-size: 0.85rem;
   border: 1.5px solid var(--border-2);
   border-radius: var(--radius-sm);
   outline: none;
+  background: var(--surface);
+  color: var(--text);
 }
 
 .option-row input[type="text"]:focus { border-color: var(--amber); }
@@ -442,7 +459,9 @@ tbody td {
 .option-row .fail-toggle {
   font-size: 0.75rem;
   font-weight: 700;
-  padding: 6px 10px;
+  padding: 6px 0;
+  min-height: 32px;
+  justify-content: center;
   border-radius: var(--radius-sm);
   border: 1.5px solid var(--border-2);
   background: var(--surface);
@@ -460,8 +479,9 @@ tbody td {
 
 .option-row .remove-opt {
   width: 28px;
-  height: 28px;
-  border-radius: 50%;
+  height: 32px;
+  padding: 0;
+  border-radius: var(--radius-sm);
   border: none;
   background: transparent;
   color: var(--text-3);

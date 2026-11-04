@@ -428,10 +428,10 @@ function addOptionRow(opt = { option_label: '', option_value: '', is_fail_value:
   const row = document.createElement('div');
   row.className = 'option-row';
   row.innerHTML = `
-    <input type="text" class="opt-label" placeholder="Label" value="${esc(opt.option_label)}" required title="Display label">
-    <input type="text" class="opt-value" placeholder="Value" value="${esc(opt.option_value)}" required title="Stored value">
-    <button type="button" class="fail-toggle ${opt.is_fail_value ? 'is-fail' : ''}" title="Mark as fail outcome">FAIL</button>
-    <button type="button" class="remove-opt" title="Remove option">✕</button>
+    <input type="text" class="opt-label" placeholder="Display text" value="${esc(opt.option_label)}" required aria-label="Display text" title="Text shown to inspectors">
+    <input type="text" class="opt-value" placeholder="Saved value" value="${esc(opt.option_value)}" required aria-label="Saved value" title="Value saved with the answer">
+    <button type="button" class="fail-toggle ${opt.is_fail_value ? 'is-fail' : ''}" aria-label="Count this option as a failure" aria-pressed="${Boolean(opt.is_fail_value)}" title="${opt.is_fail_value ? 'This answer counts as a failure' : 'This answer does not count as a failure'}">${opt.is_fail_value ? 'Yes' : 'No'}</button>
+    <button type="button" class="remove-opt" title="Remove option" aria-label="Remove answer option">✕</button>
   `;
   row.querySelector('.opt-label').addEventListener('input', function() {
     const valField = row.querySelector('.opt-value');
@@ -442,7 +442,10 @@ function addOptionRow(opt = { option_label: '', option_value: '', is_fail_value:
   });
   row.querySelector('.opt-value')._edited = Boolean(opt.option_value);
   row.querySelector('.fail-toggle').addEventListener('click', function() {
-    this.classList.toggle('is-fail');
+    const isFail = this.classList.toggle('is-fail');
+    this.setAttribute('aria-pressed', String(isFail));
+    this.textContent = isFail ? 'Yes' : 'No';
+    this.title = isFail ? 'This answer counts as a failure' : 'This answer does not count as a failure';
   });
   row.querySelector('.remove-opt').addEventListener('click', () => row.remove());
   list.appendChild(row);

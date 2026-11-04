@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Safety Inspection Admin | SML/HSE</title>
   <meta name="description" content="Admin panel for managing the Sathosa Motors safety inspection questionnaire and records.">
-  <link rel="stylesheet" href="styles.css?v=3">
+  <link rel="stylesheet" href="styles.css?v=20261104-options">
   <!-- Favicon inline emoji -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪜</text></svg>">
 </head>
@@ -195,11 +195,12 @@
               <label style="font-size:0.8rem;font-weight:600;color:var(--text-2);text-transform:uppercase;letter-spacing:0.04em;">Answer Options</label>
               <button type="button" id="addOptionBtn" class="btn-secondary btn-sm">+ Add Option</button>
             </div>
+            <div class="options-column-headings" aria-hidden="true"><span>Display text</span><span>Saved value</span><span>Fail?</span><span></span></div>
             <div id="optionsList" class="options-list"></div>
-            <p style="font-size:0.75rem;color:var(--text-3);margin-top:6px;">Mark an option as <strong>FAIL</strong> to flag it as a defect.</p>
+            <p style="font-size:0.75rem;color:var(--text-2);margin-top:8px;">Inspectors see the display text. Set Fail? to Yes for defect answers.</p>
           </div>
 
-          <div class="editor-actions" style="position: sticky; bottom: 0; background: var(--surface-1); padding: 12px; margin-top: auto; border-top: 1px solid var(--border); border-radius: 6px; box-shadow: 0 -4px 12px rgba(0,0,0,0.1); z-index: 10;">
+          <div class="editor-actions" style="position: sticky; bottom: 0; background: var(--surface); padding: 12px; margin-top: 16px; border-top: 1px solid var(--border); border-radius: 6px; box-shadow: 0 -4px 12px rgba(0,0,0,0.1); z-index: 10;">
             <button type="submit" class="btn-primary">Save Question</button>
             <button id="resetFormBtn" type="button" class="btn-secondary">Reset</button>
             <button id="deactivateBtn" type="button" class="btn-danger" style="display:none;">🔇 Deactivate</button>
@@ -406,7 +407,7 @@
 
   </div><!-- /appView -->
 
-  <script src="admin.js?v=20261104-delete-questions"></script>
+  <script src="admin.js?v=20261104-options"></script>
 
   <!-- ERROR MODAL -->
   <div id="errorModal" class="modal">
