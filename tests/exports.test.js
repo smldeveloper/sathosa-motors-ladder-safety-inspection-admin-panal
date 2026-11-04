@@ -187,3 +187,25 @@ test('deleted questions and bound fields never reappear in exports or answer his
   assert.ok(!values.some(value => value.includes('New wording after edit') || value.includes('Original wording when submitted') || value === 'Needs Repair' || value === 'Test Inspector'));
   assert.ok(!headers(workbook.worksheets[0]).some(value => value.includes('Inspector')));
 });
+
+for (const mode of ['ladder', 'fire', 'firstaid']) {
+  test(`${mode}: entered text, multiline text, zero and dates export with their actual values`, async () => {
+    const input = fixture(mode);
+    const types = ['text', 'long_text', 'number', 'date'];
+    const values = ['FAIL', 'Line one\nLine two\nLine three', 0, '2026-11-04'];
+    input.questions = types.map((type, i) => ({ id: i + 20, question: 'Entered ' + type, question_type: type, category: mode === 'ladder' ? 'general' : mode, display_order: i, is_active: true }));
+    input.rows = types.map((type, i) => ({ ...input.rows[0], question_id: i + 20, question: 'Entered ' + type, answer: 'ANSWERED', answer_label: String(values[i]), answer_type: type, answer_value: values[i], answer_remarks: null, overall_result: 'PASS' }));
+    const saved = new ExcelJS.Workbook();
+    await saved.xlsx.load(await (await buildInspectionWorkbook(input)).xlsx.writeBuffer());
+    const sheet = saved.worksheets[0];
+    assert.equal(cell(sheet, 'Entered text').value, 'FAIL');
+    assert.equal(cell(sheet, 'Entered long_text').value, values[1]);
+    assert.equal(cell(sheet, 'Entered number').value, 0);
+    assert.equal(cell(sheet, 'Entered date').value.toISOString().slice(0, 10), '2026-11-04');
+    assert.equal(cell(sheet, 'Entered date').numFmt, 'yyyy-mm-dd');
+    const textCell = cell(sheet, 'Entered text');
+    assert.ok(!sheet.conditionalFormattings.some(rule => rule.ref.split(' ').some(range => range.startsWith(textCell.address + ':'))), 'free text FAIL is not a failed decision');
+    const history = saved.getWorksheet('Answer History');
+    assert.equal(cell(history, 'Answer', 8).value, 0);
+  });
+}

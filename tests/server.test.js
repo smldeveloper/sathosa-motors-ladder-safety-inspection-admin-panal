@@ -127,6 +127,9 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
   const deletionMigration = (await import('node:fs')).readFileSync(new URL('../supabase/migrations/20261104010000_question_deletion.sql', import.meta.url), 'utf8')
     .replaceAll('public.', 'pg_temp.').replaceAll('search_path = public', 'search_path = pg_temp');
   await client.query(deletionMigration);
+  const typesMigration = (await import('node:fs')).readFileSync(new URL('../supabase/migrations/20261104020000_question_answer_types.sql', import.meta.url), 'utf8')
+    .replaceAll('public.', 'pg_temp.').replaceAll('search_path = public', 'search_path = pg_temp');
+  await client.query(typesMigration);
   pool.query = (...args) => client.query(...args);
   pool.connect = async () => ({ query: (sql, values) => {
     const transaction = sql.trim().toLowerCase();
@@ -212,6 +215,21 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       assert.equal(sheet.getCell(mode === 'fire' ? 10 : 6, addedColumn).value, null, 'new questions have blank historical answers');
       assert.ok(values.includes('Edited question'), 'original question wording is preserved in history');
       assert.equal((await json(`/inspections?mode=${mode}&ladder=does-not-exist`)).length, 0);
+      for (const [type, value] of [['text', 'FAIL'], ['number', 0], ['date', '2026-11-04']]) {
+        const created = await json(`/questions?mode=${mode}`, 'POST', { ...question(mode), question: `Typed ${type}`, question_type: type, field_key: '', options: [] });
+        await client.query(`insert into ${tables[3]} (inspection_id,inspection_point_id,question_text_snapshot,display_order_snapshot,result,answer_label,answer_value,question_type_snapshot${mode === 'ladder' ? ',category_snapshot' : ''}) values ($1,$2,$3,3,'ANSWERED',$4,$5::jsonb,$6${mode === 'ladder' ? ",'general'" : ''})`, [id, created.id, `Typed ${type}`, String(value), JSON.stringify(value), type]);
+      }
+      const typedDetails = await json(`/inspections/${id}?mode=${mode}`);
+      assert.equal(typedDetails.find(answer => answer.question_type === 'number').answer_value, 0);
+      const typedResponse = await request(`/export/inspections?mode=${mode}`);
+      const typedWorkbook = new ExcelJS.Workbook();
+      await typedWorkbook.xlsx.load(Buffer.from(await typedResponse.arrayBuffer()));
+      const typedSheet = typedWorkbook.worksheets[0];
+      const typedHeaders = typedSheet.getRow(mode === 'fire' ? 9 : 5).values;
+      const typedCell = name => typedSheet.getCell(mode === 'fire' ? 10 : 6, typedHeaders.findIndex(value => String(value).includes(name)));
+      assert.equal(typedCell('Typed text').value, 'FAIL');
+      assert.equal(typedCell('Typed number').value, 0);
+      assert.equal(typedCell('Typed date').value.toISOString().slice(0, 10), '2026-11-04');
     });
   }
 

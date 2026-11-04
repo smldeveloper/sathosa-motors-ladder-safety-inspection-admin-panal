@@ -465,7 +465,7 @@ app.get('/api/inspections/:id', requireAdmin, async (req, res, next) => {
       select r.display_order_snapshot as order,
              ${catExpr} as category,
              r.question_text_snapshot as question,
-             r.result, coalesce(r.answer_label, r.result) as answer_label, r.remarks
+             r.result, coalesce(r.answer_label, r.result) as answer_label, r.answer_value, r.question_type_snapshot as question_type, r.remarks
         from ${t.results} r
        where r.inspection_id = $1
        order by r.display_order_snapshot asc
@@ -506,7 +506,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     const tables = getTables(req);
     const { where, values } = inspectionFilters(req);
     const { rows: questions } = await pool.query(`
-      select id, category, question, display_order, is_active, is_deleted, field_key, updated_at
+      select id, category, question, question_type, display_order, is_active, is_deleted, field_key, updated_at
       from ${tables.points} order by display_order, id
     `);
     const category = mode === 'ladder' ? 'r.category_snapshot' : `'${mode}'`;
@@ -514,7 +514,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
       select i.*, i.id as inspection_id, i.remarks as overall_remarks,
              r.inspection_point_id as question_id,
              r.display_order_snapshot as question_number, ${category} as category,
-             r.question_text_snapshot as question, r.result as answer,
+             r.question_text_snapshot as question, r.result as answer, r.answer_value, r.question_type_snapshot as answer_type,
              coalesce(r.answer_label, r.result) as answer_label, r.remarks as answer_remarks
       from ${tables.inspections} i
       left join ${tables.results} r on r.inspection_id = i.id
