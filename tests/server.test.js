@@ -124,6 +124,9 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       }
     }
   }
+  const deletionMigration = (await import('node:fs')).readFileSync(new URL('../supabase/migrations/20261104010000_question_deletion.sql', import.meta.url), 'utf8')
+    .replaceAll('public.', 'pg_temp.').replaceAll('search_path = public', 'search_path = pg_temp');
+  await client.query(deletionMigration);
   pool.query = (...args) => client.query(...args);
   pool.connect = async () => ({ query: (sql, values) => {
     const transaction = sql.trim().toLowerCase();
@@ -159,7 +162,7 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       assert.equal(saved.field_key, 'changed');
       assert.equal(saved.placeholder, 'Updated hint');
       assert.deepEqual(saved.options.map(option => option.id), optionIds);
-      await json(`/questions/${id}?mode=${mode}`, 'DELETE');
+      await json(`/questions/${id}/active?mode=${mode}`, 'PATCH', { is_active: false });
       await json(`/questions/999?mode=${mode}`, 'PUT', question(mode), 404);
       await json(`/questions/999/active?mode=${mode}`, 'PATCH', { is_active: true }, 404);
       await json(`/questions/999?mode=${mode}`, 'DELETE', undefined, 404);
@@ -209,6 +212,46 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       assert.equal(sheet.getCell(mode === 'fire' ? 10 : 6, addedColumn).value, null, 'new questions have blank historical answers');
       assert.ok(values.includes('Edited question'), 'original question wording is preserved in history');
       assert.equal((await json(`/inspections?mode=${mode}&ladder=does-not-exist`)).length, 0);
+    });
+  }
+
+  for (const [mode, tables] of Object.entries(modes)) {
+    await t.test(`${mode}: deletion purges recorded data and export columns and rejects late submissions`, async () => {
+      const before = (await client.query(`select count(*)::int as count from ${tables[2]}`)).rows[0].count;
+      const deleted = await json(`/questions/1?mode=${mode}`, 'DELETE');
+      assert.equal(deleted.deletedAnswers, 1);
+      assert.equal((await client.query(`select count(*)::int as count from ${tables[3]} where inspection_point_id=1`)).rows[0].count, 0);
+      assert.equal((await client.query(`select count(*)::int as count from ${tables[1]} where question_id=1`)).rows[0].count, 0);
+      assert.equal((await client.query(`select count(*)::int as count from ${tables[2]}`)).rows[0].count, before, 'inspection records remain intact');
+      assert.ok(!(await json(`/questions?mode=${mode}`)).some(question => question.id === 1));
+      await json(`/questions/1?mode=${mode}`, 'PUT', question(mode), 404);
+      await json(`/questions/1/active?mode=${mode}`, 'PATCH', { is_active: true }, 404);
+      await json(`/questions/1?mode=${mode}`, 'DELETE', undefined, 404);
+      const response = await request(`/export/inspections?mode=${mode}`);
+      assert.equal(response.status, 200);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()));
+      const values = [];
+      workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => values.push(String(cell.value ?? '')))));
+      assert.ok(!values.some(value => value.includes('Renamed export question') || value === 'Edited question' || value === 'Bad'));
+      assert.ok(values.some(value => value.includes('New export question')), 'other questions remain');
+      const inspection = (await client.query(`select id from ${tables[2]} limit 1`)).rows[0].id;
+      await client.query('savepoint late_answer');
+      await assert.rejects(client.query(`insert into ${tables[3]} (inspection_id, inspection_point_id, question_text_snapshot, display_order_snapshot, result) values ($1,1,'Late answer',1,'PASS')`, [inspection]), /permanently deleted/);
+      await client.query('rollback to savepoint late_answer');
+      const info = await json(`/questions?mode=${mode}`, 'POST', { ...question(mode), question: 'Inspector to delete', category: 'section_1', field_key: 'inspector_name', question_type: 'text', options: [] });
+      const removedInfo = await json(`/questions/${info.id}?mode=${mode}`, 'DELETE');
+      assert.equal(removedInfo.deletedValues, 1);
+      assert.equal((await client.query(`select inspector_name from ${tables[2]} limit 1`)).rows[0].inspector_name, null);
+      const date = await json(`/questions?mode=${mode}`, 'POST', { ...question(mode), question: 'Date to delete', category: 'section_1', field_key: 'inspection_date', question_type: 'date', options: [] });
+      await json(`/questions/${date.id}?mode=${mode}`, 'DELETE');
+      assert.equal((await client.query(`select inspection_date from ${tables[2]} limit 1`)).rows[0].inspection_date, null);
+      const withoutInfo = await request(`/export/inspections?mode=${mode}`);
+      const withoutInfoWorkbook = new ExcelJS.Workbook();
+      await withoutInfoWorkbook.xlsx.load(Buffer.from(await withoutInfo.arrayBuffer()));
+      const main = withoutInfoWorkbook.worksheets[0];
+      const captions = main.getRow(mode === 'fire' ? 9 : 5).values.filter(value => value != null).map(String);
+      assert.ok(!captions.some(value => /Inspector|Inspection Date|Date to delete/.test(value) || value === 'Date'));
     });
   }
 });

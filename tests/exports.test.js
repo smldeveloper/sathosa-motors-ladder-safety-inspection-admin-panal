@@ -175,3 +175,15 @@ test('Fire question columns and record rows expand without changing any document
   assert.equal(cell(sheet, 'Changed question 45', 9).font.size, 12);
   assert.equal(cell(sheet, 'Changed question 45', 74).font.size, 11);
 });
+
+test('deleted questions and bound fields never reappear in exports or answer history', async () => {
+  const input = fixture('fire');
+  input.questions[0].is_deleted = true;
+  input.questions[0].is_active = false;
+  input.questions.push({ id: 9, category: 'section_1', field_key: 'inspector_name', question: '', is_active: false, is_deleted: true, updated_at: '2026-11-04' });
+  const workbook = await buildInspectionWorkbook(input);
+  const values = [];
+  workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => values.push(String(cell.value ?? '')))));
+  assert.ok(!values.some(value => value.includes('New wording after edit') || value.includes('Original wording when submitted') || value === 'Needs Repair' || value === 'Test Inspector'));
+  assert.ok(!headers(workbook.worksheets[0]).some(value => value.includes('Inspector')));
+});

@@ -369,6 +369,7 @@ function resetForm(focus = true) {
   if (q('formStatus')) q('formStatus').textContent = '';
   q('formStatus').className = 'status-msg';
   q('deactivateBtn').style.display = 'none';
+  q('deleteQuestionBtn').style.display = 'none';
   if (focus) q('questionText').focus();
   renderQuestionsTable(); // deselect
 }
@@ -399,6 +400,7 @@ function editQuestion(id) {
   if (q('formStatus')) q('formStatus').textContent = '';
   q('formStatus').className = 'status-msg';
   q('deactivateBtn').style.display = '';
+  q('deleteQuestionBtn').style.display = '';
   if (q('deactivateBtn')) q('deactivateBtn').textContent = q_item.is_active ? '🔇 Deactivate' : '✅ Activate';
   renderQuestionsTable();
   q('questionForm').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -493,6 +495,32 @@ q('deactivateBtn').addEventListener('click', async () => {
   try {
     await toggleActive(selectedQuestion.id, newActive);
   } catch {}
+});
+
+q('deleteQuestionBtn').addEventListener('click', async () => {
+  if (!selectedQuestion || questionBusy) return;
+  const id = selectedQuestion.id;
+  const mode = window.adminMode;
+  const version = viewVersion;
+  if (!window.confirm(`Permanently delete "${selectedQuestion.question}"?\n\nThis removes its Excel column and all recorded answers or values for this question. This cannot be undone.`)) return;
+  setQuestionBusy(true);
+  try {
+    await api('DELETE', `/questions/${id}?mode=${mode}`);
+    if (version !== viewVersion) return;
+    questions = questions.filter(question => String(question.id) !== String(id));
+    resetForm(false);
+    updateQuestionCount();
+    renderPreview();
+    window.currentRecords = [];
+    q('recordRows').innerHTML = '<tr><td colspan="7">Reload records to see the updated answers.</td></tr>';
+    q('recordStats').innerHTML = '';
+    setStatus('Question, Excel column, and recorded data deleted.', 'ok');
+    await loadQuestions();
+  } catch (err) {
+    if (version === viewVersion) showErrorModal('Could not delete question: ' + err.message);
+  } finally {
+    setQuestionBusy(false);
+  }
 });
 
 async function toggleActive(id, newActive) {

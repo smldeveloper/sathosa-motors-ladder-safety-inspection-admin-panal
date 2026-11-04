@@ -36,6 +36,9 @@ async function setup(t) {
     if (url.pathname === '/api/session') result = { authenticated: true };
     else if (url.pathname === '/api/questions' && opts.method === 'GET') result = data[mode];
     else if (url.pathname.endsWith('/active')) data[mode][0].is_active = body.is_active;
+    else if (url.pathname.startsWith('/api/questions/') && opts.method === 'DELETE') {
+      data[mode] = data[mode].filter(question => String(question.id) !== url.pathname.split('/').at(-1));
+    }
     else if (url.pathname === '/api/questions' && opts.method === 'POST') {
       const created = { ...body, id: 2 };
       data[mode].push(created);
@@ -199,3 +202,28 @@ test('Google Sheet search finds zero values and worksheet selection updates embe
   el('btnSheetViewTable').click();
   assert.equal(el('sheetTableViewContainer').classList.contains('hidden'), false);
 });
+
+for (const mode of ['ladder', 'fire', 'firstaid']) {
+  test(`${mode}: permanent deletion requires confirmation and clears the question and stale records`, async t => {
+    const { window, el, calls } = await setup(t);
+    window.showApp(mode);
+    await tick();
+    window.editQuestion(1);
+    assert.equal(el('deleteQuestionBtn').style.display, '');
+    window.confirm = () => false;
+    el('deleteQuestionBtn').click();
+    await tick();
+    assert.equal(calls.filter(call => call.method === 'DELETE').length, 0);
+    window.currentRecords = [{ id: 'old' }];
+    window.confirm = message => { assert.match(message, /all recorded answers or values/); return true; };
+    el('deleteQuestionBtn').click();
+    await tick();
+    const deletion = calls.find(call => call.method === 'DELETE');
+    assert.equal(deletion.url.searchParams.get('mode'), mode);
+    assert.doesNotMatch(el('questionRows').textContent, new RegExp(`${mode} question`));
+    assert.equal(el('questionId').value, '');
+    assert.equal(el('deleteQuestionBtn').style.display, 'none');
+    assert.equal(window.currentRecords.length, 0);
+    assert.match(el('formStatus').textContent, /recorded data deleted/);
+  });
+}

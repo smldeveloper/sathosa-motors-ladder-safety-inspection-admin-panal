@@ -1,4 +1,5 @@
 import { buildInspectionWorkbook } from './lib/inspection-export.cjs';
+import { deleteQuestion } from './lib/delete-question.cjs';
 import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -173,7 +174,7 @@ function validateQuestions(questions) {
 
 async function getQuestions(mode = 'ladder') {
   const tables = getTables({ query: { mode } });
-  const query = `select id, category, question, display_order, is_required, is_active, question_type, placeholder, field_key, created_at, updated_at from ${tables.points} order by display_order, id`;
+  const query = `select id, category, question, display_order, is_required, is_active, question_type, placeholder, field_key, created_at, updated_at from ${tables.points} where not is_deleted order by display_order, id`;
 
 
 
@@ -333,7 +334,7 @@ app.put('/api/questions/:id', requireAdmin, async (req, res, next) => {
     const tables = getTables(req);
     client = await pool.connect();
     await client.query('begin');
-    const { rows: existing } = await client.query(`select * from ${tables.points} where id=$1 for update`, [req.params.id]);
+    const { rows: existing } = await client.query(`select * from ${tables.points} where id=$1 and not is_deleted for update`, [req.params.id]);
     if (!existing.length) throw Object.assign(new Error('Question not found.'), { status: 404 });
     const q = questionData(req.body, req.query.mode, existing[0]);
     await client.query(
@@ -369,7 +370,7 @@ app.patch('/api/questions/:id/active', requireAdmin, async (req, res, next) => {
   try {
     const tables = getTables(req);
     if (typeof req.body?.is_active !== 'boolean') return res.status(400).json({ error: 'Active must be a boolean.' });
-    const { rows } = await pool.query(`update ${tables.points} set is_active=$1, updated_at=now() where id=$2 returning id, is_active`, [req.body.is_active, req.params.id]);
+    const { rows } = await pool.query(`update ${tables.points} set is_active=$1, updated_at=now() where id=$2 and not is_deleted returning id, is_active`, [req.body.is_active, req.params.id]);
     if (!rows.length) return res.status(404).json({ error: 'Question not found.' });
     res.json(rows[0]);
   } catch (error) {
@@ -379,9 +380,7 @@ app.patch('/api/questions/:id/active', requireAdmin, async (req, res, next) => {
 
 app.delete('/api/questions/:id', requireAdmin, async (req, res, next) => {
   try {
-    const { rowCount } = await pool.query(`update ${getTables(req).points} set is_active=false, updated_at=now() where id=$1`, [req.params.id]);
-    if (!rowCount) return res.status(404).json({ error: 'Question not found.' });
-    res.json({ ok: true });
+    res.json(await deleteQuestion(pool, getTables(req), req.params.id));
   } catch (error) {
     next(error);
   }
@@ -507,7 +506,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     const tables = getTables(req);
     const { where, values } = inspectionFilters(req);
     const { rows: questions } = await pool.query(`
-      select id, category, question, display_order, is_active, field_key, updated_at
+      select id, category, question, display_order, is_active, is_deleted, field_key, updated_at
       from ${tables.points} order by display_order, id
     `);
     const category = mode === 'ladder' ? 'r.category_snapshot' : `'${mode}'`;
