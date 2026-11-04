@@ -53,6 +53,7 @@ if (fs.existsSync(envPath)) {
 }
 
 const ExcelJS = require('exceljs');
+const { buildInspectionWorkbook } = require('../lib/inspection-export.cjs');
 const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');

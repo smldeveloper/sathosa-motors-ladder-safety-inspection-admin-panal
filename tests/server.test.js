@@ -190,14 +190,24 @@ test('API workflows against isolated PostgreSQL temporary tables', { skip: proce
       assert.equal(records[0].fail_count, 1);
       const details = await json(`/inspections/${id}?mode=${mode}`);
       assert.equal(details[0].answer_label, 'Bad');
+      await json(`/questions/1?mode=${mode}`, 'PUT', { question: 'Renamed export question', display_order: 2, is_active: true });
+      await json(`/questions?mode=${mode}`, 'POST', { ...question(mode), question: 'New export question', display_order: 1 });
       const response = await request(`/export/inspections?${query}`);
       assert.equal(response.status, 200);
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()));
       const values = [];
-      workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => values.push(String(cell.value ?? '')))));
+      workbook.eachSheet(sheet => sheet.eachRow(row => row.eachCell(cell => values.push(cell.value instanceof Date ? cell.value.toISOString().slice(0, 10) : String(cell.value ?? '')))));
       assert.ok(values.includes('1234'), 'export contains the matching fixture');
       assert.ok(values.includes('2026-11-04'), 'export preserves calendar date');
+      const sheet = workbook.getWorksheet('Inspection Records');
+      const headings = sheet.getRow(5).values;
+      const renamedColumn = headings.findIndex(value => String(value).includes('Renamed export question'));
+      const addedColumn = headings.findIndex(value => String(value).includes('New export question'));
+      assert.ok(addedColumn > 0 && addedColumn < renamedColumn, 'question additions and ordering are dynamic');
+      assert.equal(sheet.getCell(6, renamedColumn).value, 'Bad', 'renamed question retains the saved answer by ID');
+      assert.equal(sheet.getCell(6, addedColumn).value, null, 'new questions have blank historical answers');
+      assert.ok(values.includes('Edited question'), 'original question wording is preserved in history');
       assert.equal((await json(`/inspections?mode=${mode}&ladder=does-not-exist`)).length, 0);
     });
   }
