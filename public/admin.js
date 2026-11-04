@@ -7,7 +7,10 @@
 /* ─── State ──────────────────────────────────────────────── */
 let questions = [];
 let selectedQuestion = null;
-let importedPreview = null;
+let viewVersion = 0;
+let questionRequest = 0;
+let recordRequest = 0;
+let questionBusy = false;
 
 
 document.getElementById('adminModeSelector')?.addEventListener('change', (e) => {
@@ -18,13 +21,6 @@ document.getElementById('adminModeSelector')?.addEventListener('change', (e) => 
 /* ─── Utility helpers ────────────────────────────────────── */
 const esc = str => String(str ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const q = id => document.getElementById(id);
-
-function showErrorModal(msg) {
-  const el = q('errorModalText');
-  if (el) el.textContent = msg;
-  const modal = q('errorModal');
-  if (modal) modal.classList.add('active');
-}
 
 const show = el => el?.classList.remove('hidden');
 const hide = el => el?.classList.add('hidden');
@@ -42,6 +38,8 @@ function showErrorModal(msg) {
 
 function sectionBadge(s) {
   const cls = {
+    section_1: 'badge-section-1',
+    section_2: 'badge-section-2',
     general: 'badge-section-general',
     extension: 'badge-section-extension',
     step: 'badge-section-step',
@@ -50,19 +48,21 @@ function sectionBadge(s) {
     firstaid: 'badge-section-general'
   };
   const lbl = {
-    general: 'General',
-    extension: 'Extension',
-    step: 'Step',
-    fire: 'Fire Ext.',
-    fire_extinguisher: 'Fire Ext.',
-    firstaid: 'First Aid'
+    section_1: '§1 Info',
+    section_2: '§2 Equipment',
+    general: '§3 General',
+    extension: '§3 Extension',
+    step: '§3 Step',
+    fire: '§3 Fire Ext.',
+    fire_extinguisher: '§3 Fire Ext.',
+    firstaid: '§3 First Aid'
   };
-  return `<span class="badge ${cls[s] || 'badge-section-general'}">${lbl[s] || s}</span>`;
+  return `<span class="badge ${cls[s] || 'badge-section-general'}">${esc(lbl[s] || s)}</span>`;
 }
 
 function typeBadge(t) {
   const labels = { decision: 'Decision', yes_no: 'Yes/No', multiple_choice: 'Choice', text: 'Text', long_text: 'Long Text', number: 'Number', date: 'Date' };
-  return labels[t] || t;
+  return esc(labels[t] || t);
 }
 
 /* ─── API calls ──────────────────────────────────────────── */
@@ -70,13 +70,17 @@ async function api(method, path, body) {
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
     credentials: 'same-origin'
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch('/api' + path, opts);
   const ct = res.headers.get('content-type') || '';
   const data = ct.includes('application/json') ? await res.json() : await res.text();
-  if (!res.ok) throw new Error((data && data.error) || data || `HTTP ${res.status}`);
+  if (!res.ok) {
+    if (res.status === 401 && path !== '/login') showLogin();
+    throw new Error((data && data.error) || data || `HTTP ${res.status}`);
+  }
   return data;
 }
 
@@ -95,18 +99,27 @@ async function checkSession() {
 }
 
 function showLogin() {
+  viewVersion++;
+  questions = [];
+  selectedQuestion = null;
+  window.currentRecords = [];
   hide(q('appView'));
   const m = q('modeSelectView'); if (m) hide(m);
   show(q('loginView'));
 }
 
 function showModeSelect() {
+  viewVersion++;
   hide(q('loginView'));
   hide(q('appView'));
   const m = q('modeSelectView'); if (m) show(m);
 }
 
 function showApp(mode) {
+  viewVersion++;
+  questions = [];
+  selectedQuestion = null;
+  window.currentRecords = [];
   window.adminMode = mode || 'ladder';
   if (q('adminModeSelector')) {
     q('adminModeSelector').value = window.adminMode;
@@ -135,17 +148,32 @@ function showApp(mode) {
   const catSelect = q('category');
   if (catSelect) {
     if (window.adminMode === 'fire') {
-      catSelect.innerHTML = '<option value="fire">🧯 Fire Extinguisher</option>';
+      catSelect.innerHTML = `
+        <option value="section_1">👤 Section 1: Employee Info</option>
+        <option value="section_2">🏢 Section 2: Equipment Info</option>
+        <option value="fire">🧯 Section 3: Fire Checklist</option>
+      `;
     } else if (window.adminMode === 'firstaid') {
-      catSelect.innerHTML = '<option value="firstaid">🩹 First Aid Box</option>';
+      catSelect.innerHTML = `
+        <option value="section_1">👤 Section 1: Employee Info</option>
+        <option value="section_2">🏢 Section 2: Equipment Info</option>
+        <option value="firstaid">🩹 Section 3: First Aid Checklist</option>
+      `;
     } else {
       catSelect.innerHTML = `
+        <option value="section_1">Section 1: Employee Info</option>
+        <option value="section_2">Section 2: Equipment Info</option>
         <option value="general">🔧 General</option>
         <option value="extension">🔄 Extension</option>
         <option value="step">🪜 Step</option>
       `;
     }
   }
+
+  if (q('sectionFilter')) q('sectionFilter').value = 'all';
+  resetForm(false);
+  q('recordRows').innerHTML = '<tr><td colspan="7">Use "Apply Filters" to load records.</td></tr>';
+  q('recordStats').innerHTML = '';
 
   hide(q('loginView'));
   const m = q('modeSelectView'); if (m) hide(m);
@@ -213,8 +241,12 @@ if (localStorage.getItem('theme') === 'dark') {
 }
 
 q('logoutBtn').addEventListener('click', async () => {
-  try { await api('POST', '/logout'); } catch {}
-  showLogin();
+  try {
+    await api('POST', '/logout');
+    showLogin();
+  } catch (err) {
+    showErrorModal('Could not sign out: ' + err.message);
+  }
 });
 
 /* ─── Tab Navigation ─────────────────────────────────────── */
@@ -237,12 +269,23 @@ document.querySelectorAll('.tab').forEach(btn => {
    QUESTIONS TAB
    ═══════════════════════════════════════════════════════════ */
 async function loadQuestions() {
+  const mode = window.adminMode;
+  const version = viewVersion;
+  const request = ++questionRequest;
   try {
-    questions = await api('GET', `/questions?mode=${window.adminMode}`);
+    const loaded = await api('GET', `/questions?mode=${mode}`);
+    if (version !== viewVersion || request !== questionRequest) return false;
+    questions = loaded;
+    selectedQuestion = questions.find(item => String(item.id) === String(selectedQuestion?.id)) || null;
     renderQuestionsTable();
     updateQuestionCount();
+    renderPreview();
+    if (!selectedQuestion && !q('questionId').value) q('sortOrder').value = Math.max(0, ...questions.map(item => Number(item.display_order))) + 1;
+    return true;
   } catch (err) {
+    if (version !== viewVersion || request !== questionRequest) return false;
     showErrorModal('Failed to load questions: ' + err.message);
+    return false;
   }
 }
 
@@ -252,14 +295,25 @@ function updateQuestionCount() {
   if (q('questionCount')) q('questionCount').textContent = `${active} active · ${total} total questions`;
 }
 
-function renderQuestionsTable() {
+
+/* ─── Section Filter ─────────────────────────────────────── */
+function applyFilteredTable() {
+  const filter = (q('sectionFilter') ? q('sectionFilter').value : 'all') || 'all';
   const tbody = q('questionRows');
   if (!questions.length) {
-    tbody.innerHTML = `<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">📋</div><p>No questions found. Add the first one using the form.</p></div></td></tr>`;
+    tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><div class="empty-icon">📋</div><p>No questions found. Add the first one using the form.</p></div></td></tr>';
     return;
   }
+  const isSection3 = cat => !['section_1','section_2'].includes(cat);
+  const filtered = filter === 'all' ? questions
+    : filter === 'section_3' ? questions.filter(x => isSection3(x.category))
+    : questions.filter(x => x.category === filter);
 
-  tbody.innerHTML = questions.map(item => `
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:32px;text-align:center;color:var(--text-3);">No questions in this section. Try another filter or add one.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(item => `
     <tr class="${selectedQuestion?.id === item.id ? 'selected' : ''}" data-id="${item.id}" style="cursor:pointer;">
       <td class="mono" style="color:var(--text-2); width:56px;">${item.display_order}</td>
       <td>${item.category === 'fire_extinguisher' ? '<span class="badge badge-section-general">Fire Ext</span>' : sectionBadge(item.category)}</td>
@@ -287,13 +341,21 @@ function renderQuestionsTable() {
   });
 }
 
-/* ─── Question Form ──────────────────────────────────────── */
-function resetForm() {
+if (q('sectionFilter')) {
+  q('sectionFilter').addEventListener('change', applyFilteredTable);
+}
+function renderQuestionsTable() {
+  applyFilteredTable();
+}
+
+function resetForm(focus = true) {
   selectedQuestion = null;
   if (q('editorTitle')) q('editorTitle').textContent = 'Add Question';
   q('questionId').value = '';
   q('questionText').value = '';
   q('category').value = window.adminMode === 'fire' ? 'fire' : window.adminMode === 'firstaid' ? 'firstaid' : 'general';
+  q('placeholder').value = '';
+  q('fieldKey').value = '';
   q('questionType').value = 'decision';
   q('sortOrder').value = (Math.max(0, ...questions.map(x => x.display_order)) + 1) || 1;
   q('required').checked = true;
@@ -303,26 +365,37 @@ function resetForm() {
     { option_label: 'FAIL', option_value: 'FAIL', is_fail_value: true },
     
   ]);
+  syncOptionsEditor();
   if (q('formStatus')) q('formStatus').textContent = '';
   q('formStatus').className = 'status-msg';
   q('deactivateBtn').style.display = 'none';
-  q('questionText').focus();
+  if (focus) q('questionText').focus();
   renderQuestionsTable(); // deselect
 }
 
 function editQuestion(id) {
-  const q_item = questions.find(x => x.id === id);
+  if (questionBusy) return;
+  const q_item = questions.find(x => String(x.id) === String(id));
   if (!q_item) return;
   selectedQuestion = q_item;
   if (q('editorTitle')) q('editorTitle').textContent = 'Edit Question';
   q('questionId').value = q_item.id;
   q('questionText').value = q_item.question;
+  if (!Array.from(q('category').options).some(option => option.value === q_item.category)) {
+    const option = document.createElement('option');
+    option.value = q_item.category;
+    option.textContent = q_item.category;
+    q('category').appendChild(option);
+  }
   q('category').value = q_item.category;
+  q('placeholder').value = q_item.placeholder || '';
+  q('fieldKey').value = q_item.field_key || '';
   q('questionType').value = q_item.question_type;
   q('sortOrder').value = q_item.display_order;
   q('required').checked = q_item.is_required;
   q('active').checked = q_item.is_active;
   renderOptionsEditor(q_item.options || []);
+  syncOptionsEditor();
   if (q('formStatus')) q('formStatus').textContent = '';
   q('formStatus').className = 'status-msg';
   q('deactivateBtn').style.display = '';
@@ -365,6 +438,7 @@ function addOptionRow(opt = { option_label: '', option_value: '', is_fail_value:
   row.querySelector('.opt-value').addEventListener('input', function() {
     this._edited = true;
   });
+  row.querySelector('.opt-value')._edited = Boolean(opt.option_value);
   row.querySelector('.fail-toggle').addEventListener('click', function() {
     this.classList.toggle('is-fail');
   });
@@ -375,15 +449,17 @@ function addOptionRow(opt = { option_label: '', option_value: '', is_fail_value:
 q('addOptionBtn')?.addEventListener('click', () => addOptionRow());
 
 /* Show/hide options editor based on question type */
-q('questionType').addEventListener('change', function() {
-  const needsOptions = ['decision', 'yes_no', 'multiple_choice'].includes(this.value);
+function syncOptionsEditor() {
+  const needsOptions = ['decision', 'yes_no', 'multiple_choice'].includes(q('questionType').value);
   q('optionsSection').style.display = needsOptions ? '' : 'none';
   if (needsOptions && !q('optionsList').children.length) {
-    addOptionRow({ option_label: 'PASS', option_value: 'PASS', is_fail_value: false });
-    addOptionRow({ option_label: 'FAIL', option_value: 'FAIL', is_fail_value: true });
-    
+    const yesNo = q('questionType').value === 'yes_no';
+    addOptionRow({ option_label: yesNo ? 'Yes' : 'PASS', option_value: yesNo ? 'YES' : 'PASS', is_fail_value: false });
+    addOptionRow({ option_label: yesNo ? 'No' : 'FAIL', option_value: yesNo ? 'NO' : 'FAIL', is_fail_value: true });
   }
-});
+  q('optionsList').querySelectorAll('input').forEach(input => { input.disabled = !needsOptions || questionBusy; });
+}
+q('questionType').addEventListener('change', syncOptionsEditor);
 
 function getFormData() {
   const needsOptions = ['decision', 'yes_no', 'multiple_choice'].includes(q('questionType').value);
@@ -394,6 +470,8 @@ function getFormData() {
     display_order: Number(q('sortOrder').value),
     is_required:   q('required').checked,
     is_active:     q('active').checked,
+    placeholder:   q('placeholder').value.trim(),
+    field_key:     q('fieldKey').value.trim(),
     options:       needsOptions ? getOptions() : [],
   };
 }
@@ -418,20 +496,38 @@ q('deactivateBtn').addEventListener('click', async () => {
 });
 
 async function toggleActive(id, newActive) {
-  const item = questions.find(x => x.id === id);
-  if (!item) return;
+  const item = questions.find(x => String(x.id) === String(id));
+  if (!item || questionBusy) return;
+  const mode = window.adminMode;
+  const version = viewVersion;
+  setQuestionBusy(true);
   try {
-    await api('PUT', `/questions/${id}`, { ...item, is_active: newActive, options: item.options || [] });
-    await loadQuestions();
-    if (selectedQuestion?.id === id) editQuestion(id);
+    await api('PATCH', `/questions/${id}/active?mode=${mode}`, { is_active: newActive });
+    if (version !== viewVersion) return;
+    if (!await loadQuestions()) return;
+    if (String(selectedQuestion?.id) === String(id)) {
+      q('active').checked = newActive;
+      q('deactivateBtn').textContent = newActive ? 'Deactivate' : 'Activate';
+    }
     setStatus(`Question ${newActive ? 'activated' : 'deactivated'}.`, 'ok');
   } catch (err) {
-    showErrorModal('Error: ' + err.message);
+    if (version === viewVersion) showErrorModal('Error: ' + err.message);
+  } finally {
+    setQuestionBusy(false);
   }
+}
+
+function setQuestionBusy(busy) {
+  questionBusy = busy;
+  q('questionForm').querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = busy; });
+  q('questionRows').querySelectorAll('button').forEach(el => { el.disabled = busy; });
+  q('newQuestionBtn').disabled = busy;
+  if (!busy) syncOptionsEditor();
 }
 
 q('questionForm').addEventListener('submit', async e => {
   e.preventDefault();
+  if (questionBusy) return;
   const data = getFormData();
   if (!data.question) { setStatus('Question text is required.', 'err'); return; }
   const needsOptions = ['decision', 'yes_no', 'multiple_choice'].includes(data.question_type);
@@ -439,29 +535,40 @@ q('questionForm').addEventListener('submit', async e => {
     setStatus('All options must have a label and value.', 'err');
     return;
   }
-  if (!Number.isFinite(data.display_order) || data.display_order <= 0) {
-    setStatus('Sort order must be a positive number.', 'err');
+  if (new Set(data.options.map(o => o.option_value)).size !== data.options.length) {
+    setStatus('Option values must be unique.', 'err');
+    return;
+  }
+  if (!Number.isSafeInteger(data.display_order) || data.display_order <= 0) {
+    setStatus('Sort order must be a positive whole number.', 'err');
     return;
   }
 
   setStatus('Saving…', 'ok');
+  const mode = window.adminMode;
+  const version = viewVersion;
+  const id = q('questionId').value;
+  let savedId = id;
+  setQuestionBusy(true);
   try {
-    const id = q('questionId').value;
     if (id) {
-      await api('PUT', `/questions/${id}`, data);
+      await api('PUT', `/questions/${id}?mode=${mode}`, data);
     } else {
-      const result = await api('POST', '/questions', data);
-      q('questionId').value = result.id;
+      const result = await api('POST', `/questions?mode=${mode}`, data);
+      savedId = result.id;
     }
-    await loadQuestions();
+    if (version !== viewVersion) return;
+    if (!await loadQuestions()) return;
+    setQuestionBusy(false);
+    editQuestion(savedId);
     setStatus('Question saved ✓', 'ok');
-    if (!id) {
-      // After adding, select the new question
-      const created = questions.find(x => String(x.id) === String(q('questionId').value));
-      if (created) editQuestion(created.id);
-    }
   } catch (err) {
-    showErrorModal('Error: ' + err.message);
+    if (version === viewVersion) {
+      setStatus('Question could not be saved.', 'err');
+      showErrorModal('Error: ' + err.message);
+    }
+  } finally {
+    setQuestionBusy(false);
   }
 });
 
@@ -471,8 +578,9 @@ q('questionForm').addEventListener('submit', async e => {
 function renderPreview() {
   const container = q('previewList');
   if (!container) return;
-  if (!questions || !questions.length) {
-    container.innerHTML = '<p style="color:var(--text-3);padding:24px;">No questions found.</p>';
+  const activeQuestions = questions.filter(item => item.is_active);
+  if (!activeQuestions.length) {
+    container.innerHTML = '<p style="color:var(--text-3);padding:24px;">No active questions to preview.</p>';
     return;
   }
 
@@ -507,7 +615,7 @@ function renderPreview() {
   let html = '';
 
   for (const sec of sections) {
-    const items = questions.filter(x => sec.match ? sec.match(x.category) : x.category === sec.key);
+    const items = activeQuestions.filter(x => sec.match ? sec.match(x.category) : x.category === sec.key);
     if (!items.length) continue;
     items.forEach(x => renderedIds.add(x.id));
 
@@ -522,7 +630,7 @@ function renderPreview() {
     `;
   }
 
-  const remaining = questions.filter(x => !renderedIds.has(x.id));
+  const remaining = activeQuestions.filter(x => !renderedIds.has(x.id));
   if (remaining.length > 0) {
     html += `
       <div class="preview-section fade-in">
@@ -571,6 +679,9 @@ function renderPreviewQuestion(item) {
    RECORDS TAB
    ═══════════════════════════════════════════════════════════ */
 async function loadRecords() {
+  const version = viewVersion;
+  const request = ++recordRequest;
+  const mode = window.adminMode;
   const params = new URLSearchParams();
   const from = q('filterFrom').value;
   const to = q('filterTo').value;
@@ -587,12 +698,17 @@ async function loadRecords() {
   tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-3);">Loading...</td></tr>`;
 
   try {
-    params.set('mode', window.adminMode);
+    if (from && to && from > to) throw new Error('From date must be before or equal to To date.');
+    params.set('mode', mode);
     const records = await api('GET', '/inspections?' + params);
+    if (version !== viewVersion || request !== recordRequest) return;
     window.currentRecords = records;
     renderRecords(records);
     renderRecordStats(records);
   } catch (err) {
+    if (version !== viewVersion || request !== recordRequest) return;
+    window.currentRecords = [];
+    renderRecordStats([]);
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--fail);padding:12px;">${esc(err.message)}</td></tr>`;
   }
 }
@@ -600,7 +716,7 @@ async function loadRecords() {
 function renderRecordStats(records) {
   const total = records.length;
   const passed = records.filter(r => r.overall_result === 'PASS').length;
-  const failed = records.filter(r => r.overall_result === 'FAIL').length;
+  const failed = records.filter(r => ['FAIL', 'EXPIRED'].includes(r.overall_result)).length;
   const statsEl = q('recordStats');
   if (statsEl) {
     statsEl.innerHTML = `
@@ -619,11 +735,11 @@ function renderRecords(records) {
   }
   tbody.innerHTML = records.map(r => `
     <tr>
-      <td class="mono" style="white-space:nowrap;">${r.inspection_date || '—'}</td>
+      <td class="mono" style="white-space:nowrap;">${esc(r.inspection_date?.split('T')[0] || '—')}</td>
       <td><strong>${esc(r.ladder_no)}</strong><br><span style="font-size:0.78rem;color:var(--text-2);">${esc(r.section)}</span></td>
       <td>${esc(r.inspector_name)}<br><span style="font-size:0.78rem;color:var(--text-2);">EPF: ${esc(r.epf_number)}</span></td>
-      <td style="text-transform:capitalize;">${esc(r.ladder_type)}<br><span style="font-size:0.78rem;color:var(--text-2);">${window.adminMode === 'fire' ? r.height_feet : r.height_feet + ' ft'}${window.adminMode === 'fire' && r.pressure_weight ? ' (' + esc(r.pressure_weight) + ')' : ''}</span></td>
-      <td><span class="badge ${r.overall_result === 'PASS' ? 'badge-pass' : 'badge-fail'}">${r.overall_result}</span></td>
+      <td style="text-transform:capitalize;">${window.adminMode === 'firstaid' ? 'First Aid Box' : esc(r.ladder_type)}<br><span style="font-size:0.78rem;color:var(--text-2);">${window.adminMode === 'firstaid' ? '' : esc(r.height_feet ?? '') + (window.adminMode === 'fire' ? '' : ' ft')}${window.adminMode === 'fire' && r.pressure_weight ? ' (' + esc(r.pressure_weight) + ')' : ''}</span></td>
+      <td><span class="badge ${r.overall_result === 'PASS' ? 'badge-pass' : 'badge-fail'}">${esc(r.overall_result)}</span></td>
       <td class="mono" style="font-size:0.8rem;">${r.answer_count ?? '—'} / ${r.fail_count > 0 ? `<span style="color:var(--fail);">${r.fail_count} fail</span>` : '<span style="color:var(--pass);">0 fail</span>'}</td>
       <td>
         <button class="btn-secondary btn-sm" onclick="toggleRecordDetails('${r.id}', this)" style="padding: 4px 8px; font-size: 0.75rem;">View Details</button>
@@ -640,6 +756,7 @@ function renderRecords(records) {
 
 window.toggleRecordDetails = async function(id, btn) {
   const row = document.getElementById(`details-${id}`);
+  if (!row) return;
   if (!row.classList.contains('hidden')) {
     row.classList.add('hidden');
     btn.textContent = 'View Details';
@@ -677,8 +794,9 @@ window.toggleRecordDetails = async function(id, btn) {
 q('loadRecordsBtn').addEventListener('click', loadRecords);
 
 
-q('exportPdfBtn')?.addEventListener('click', () => {
+q('exportPdfBtn')?.addEventListener('click', async () => {
   try {
+    if (!window.currentRecords?.length) throw new Error('Load records before exporting a PDF.');
     const table = q('recordRows').cloneNode(true);
     // Remove details rows from the clone
     table.querySelectorAll('.record-details').forEach(el => el.remove());
@@ -689,9 +807,9 @@ q('exportPdfBtn')?.addEventListener('click', () => {
     content += '<table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">';
     content += '<tr style="background-color: #f3f4f6; border-bottom: 2px solid #d1d5db; text-align: left;">';
     content += '<th style="padding: 10px;">Date</th>';
-    content += '<th style="padding: 10px;">' + (window.adminMode === 'fire' ? 'Point No / Location' : 'Ladder / Location') + '</th>';
+    content += '<th style="padding: 10px;">' + q('thLocation').textContent + '</th>';
     content += '<th style="padding: 10px;">Inspector / EPF</th>';
-    content += '<th style="padding: 10px;">' + (window.adminMode === 'fire' ? 'Type / Qty' : 'Type / Height') + '</th>';
+    content += '<th style="padding: 10px;">' + q('thType').textContent + '</th>';
     content += '<th style="padding: 10px;">Result</th>';
     content += '<th style="padding: 10px;">Answers</th>';
     content += '</tr>';
@@ -719,7 +837,7 @@ q('exportPdfBtn')?.addEventListener('click', () => {
       jsPDF:        { unit: 'in', format: 'letter', orientation: 'landscape' }
     };
     
-    html2pdf().set(opt).from(wrapper).save();
+    await html2pdf().set(opt).from(wrapper).save();
     
   } catch(e) {
     showErrorModal('Failed to export PDF summary: ' + e.message);
@@ -747,22 +865,30 @@ q('exportInspectionsBtn')?.addEventListener('click', () => {
 checkSession();
 
 window.printRecord = async function(id) {
+  const mode = window.adminMode;
+  const version = viewVersion;
   try {
-    const answers = await api('GET', '/inspections/' + id + '?mode=' + (window.adminMode || 'ladder'));
-    const r = window.currentRecords ? window.currentRecords.find(rec => rec.id === id) : null;
+    const answers = await api('GET', '/inspections/' + id + '?mode=' + mode);
+    if (version !== viewVersion) return;
+    const r = window.currentRecords?.find(rec => String(rec.id) === String(id));
     
     let content = '<div style="font-family: sans-serif; padding: 30px; color: #000; background: #fff; max-width: 900px; margin: 0 auto;">';
     
     if (r) {
       content += '<div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; border-bottom: 2px solid #333; padding-bottom: 10px;">';
       content += '<div><h2 style="margin: 0 0 10px 0;">Inspection Report</h2>';
-      content += '<p style="margin: 3px 0;"><strong>Ladder No.:</strong> ' + (r.ladder_no || 'N/A') + '</p>';
-      content += '<p style="margin: 3px 0;"><strong>Type:</strong> ' + (r.ladder_type || 'N/A') + '</p>';
-      content += '<p style="margin: 3px 0;"><strong>' + (window.adminMode === 'fire' ? 'Quantity:' : 'Height:') + '</strong> ' + (r.height_feet || 0) + (window.adminMode === 'fire' ? '' : ' ft') + (window.adminMode === 'fire' && r.pressure_weight ? ' (' + esc(r.pressure_weight) + ')' : '') + '</p></div>';
+      content += '<p style="margin: 3px 0;"><strong>' + (mode === 'fire' ? 'Point No.:' : mode === 'firstaid' ? 'Box No.:' : 'Ladder No.:') + '</strong> ' + esc(r.ladder_no || 'N/A') + '</p>';
+      content += '<p style="margin: 3px 0;"><strong>Location:</strong> ' + esc(r.section || 'N/A') + '</p>';
+      if (mode !== 'firstaid') {
+        content += '<p style="margin: 3px 0;"><strong>Type:</strong> ' + esc(r.ladder_type || 'N/A') + '</p>';
+        content += '<p style="margin: 3px 0;"><strong>' + (mode === 'fire' ? 'Quantity:' : 'Height:') + '</strong> ' + esc(r.height_feet ?? '') + (mode === 'fire' ? '' : ' ft') + (mode === 'fire' && r.pressure_weight ? ' (' + esc(r.pressure_weight) + ')' : '') + '</p>';
+      }
+      content += '</div>';
       content += '<div style="text-align: right;">';
       content += '<p style="margin: 3px 0;"><strong>Date:</strong> ' + (r.inspection_date ? r.inspection_date.split('T')[0] : 'N/A') + '</p>';
-      content += '<p style="margin: 3px 0;"><strong>Inspector:</strong> ' + (r.inspector_name || 'N/A') + '</p>';
-      content += '<p style="margin: 3px 0;"><strong>Result:</strong> <span style="color:' + (r.overall_result === 'PASS' ? 'green' : 'red') + ';font-weight:bold;">' + (r.overall_result || 'N/A') + '</span></p>';
+      content += '<p style="margin: 3px 0;"><strong>Inspector:</strong> ' + esc(r.inspector_name || 'N/A') + '</p>';
+      content += '<p style="margin: 3px 0;"><strong>EPF:</strong> ' + esc(r.epf_number || 'N/A') + '</p>';
+      content += '<p style="margin: 3px 0;"><strong>Result:</strong> <span style="color:' + (r.overall_result === 'PASS' ? 'green' : 'red') + ';font-weight:bold;">' + esc(r.overall_result || 'N/A') + '</span></p>';
       content += '</div></div>';
     }
     
@@ -795,7 +921,7 @@ window.printRecord = async function(id) {
       jsPDF:        { unit: 'in', format: 'letter', orientation: 'portrait' }
     };
     
-    html2pdf().set(opt).from(wrapper).save();
+    await html2pdf().set(opt).from(wrapper).save();
     
   } catch(e) {
     showErrorModal('Failed to export PDF: ' + e.message);
@@ -820,14 +946,17 @@ let sheetRowsPerPage = 50;
 let sheetSortCol = -1;
 let sheetSortAsc = true;
 let sheetViewMode = 'table';
+let sheetRequest = 0;
 
 async function loadSheetData(sheetName = null, forceRefresh = false) {
+  const version = viewVersion;
+  const request = ++sheetRequest;
   const tableBody = q('sheetBodyRows');
   const headerRow = q('sheetHeaderRow');
   const permBox = q('sheetPermissionBox');
   const subtitle = q('sheetSubtitle');
 
-  if (sheetName) currentSheetName = sheetName;
+  const requestedName = sheetName ?? currentSheetName;
 
   if (tableBody) {
     tableBody.innerHTML = `
@@ -842,10 +971,20 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
   }
 
   try {
-    const url = `/sheets/data${currentSheetName ? `?sheetName=${encodeURIComponent(currentSheetName)}` : ''}`;
+    const params = new URLSearchParams();
+    if (requestedName) params.set('sheetName', requestedName);
+    if (forceRefresh) params.set('_refresh', Date.now());
+    const url = `/sheets/data?${params}`;
     const data = await api('GET', url);
+    if (version !== viewVersion || request !== sheetRequest) return;
     currentSheetData = data;
     currentSheetName = data.activeSheet ? data.activeSheet.title : null;
+    if (data.sheetUrl) {
+      q('sheetsTab').querySelectorAll('a[href*="docs.google.com/spreadsheets"]').forEach(link => { link.href = data.sheetUrl; });
+    }
+    if (data.spreadsheetId && data.activeSheet) {
+      q('googleSheetIframe').src = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(data.spreadsheetId)}/edit?gid=${data.activeSheet.sheetId}&widget=true&headers=false`;
+    }
 
     if (permBox) permBox.classList.add('hidden');
     if (subtitle) {
@@ -858,6 +997,13 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
     renderGoogleSheetTable();
 
   } catch (err) {
+    if (version !== viewVersion || request !== sheetRequest) return;
+    currentSheetData = null;
+    if (headerRow) headerRow.innerHTML = '<th>Google Sheet</th>';
+    q('sheetStatsRow').innerHTML = '';
+    q('sheetPaginationInfo').textContent = '';
+    q('sheetPaginationNav').innerHTML = '';
+    q('sheetSearchCount').textContent = '';
     console.error('Error loading Google Sheet:', err);
     if (tableBody) {
       tableBody.innerHTML = `
@@ -881,7 +1027,7 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
     if (permBox) {
       permBox.classList.remove('hidden');
       api('GET', '/sheets/info').then(info => {
-        if (info.serviceAccountEmail && q('saEmailDisplay')) {
+        if (version === viewVersion && request === sheetRequest && info.serviceAccountEmail && q('saEmailDisplay')) {
           q('saEmailDisplay').textContent = info.serviceAccountEmail;
         }
       }).catch(() => {});
@@ -950,7 +1096,7 @@ function renderGoogleSheetTable() {
   // Filter rows
   if (sheetSearchQuery) {
     const qLower = sheetSearchQuery.toLowerCase();
-    rows = rows.filter(row => row.some(cell => String(cell || '').toLowerCase().includes(qLower)));
+    rows = rows.filter(row => row.some(cell => String(cell ?? '').toLowerCase().includes(qLower)));
   }
 
   // Sort rows

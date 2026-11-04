@@ -94,6 +94,12 @@
           <p id="questionCount">Loading questions…</p>
         </div>
         <div class="panel-head-actions">
+          <select id="sectionFilter" style="padding: 7px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-1); font-size: 0.85rem; color: var(--text);">
+            <option value="all">All Sections (1, 2 &amp; 3)</option>
+            <option value="section_1">👤 Section 1: Employee Info</option>
+            <option value="section_2">🏢 Section 2: Equipment Info</option>
+            <option value="section_3">📋 Section 3: Checklist Points</option>
+          </select>
           <button id="newQuestionBtn" type="button" class="btn-primary">+ Add Question</button>
         </div>
       </div>
@@ -126,7 +132,7 @@
           <input type="hidden" id="questionId">
 
           <div class="form-field">
-            <label for="questionText">Question Text *</label>
+            <label for="questionText">Question / Field Label *</label>
             <textarea id="questionText" rows="3" required placeholder="Enter the inspection question…"></textarea>
           </div>
 
@@ -157,6 +163,17 @@
           <div class="form-field">
             <label for="sortOrder">Sort Order</label>
             <input id="sortOrder" type="number" min="1" step="1" required>
+          </div>
+
+          <div class="form-grid-2">
+            <div class="form-field">
+              <label for="placeholder">Placeholder / Input Hint</label>
+              <input id="placeholder" type="text" placeholder="e.g. John Perera or LDR-042">
+            </div>
+            <div class="form-field">
+              <label for="fieldKey">Field Identifier Key</label>
+              <input id="fieldKey" type="text" placeholder="e.g. inspector_name, ladder_no">
+            </div>
           </div>
 
           <div class="divider"></div>
@@ -197,7 +214,7 @@
       <div class="panel-head">
         <div>
           <h2>Questionnaire Preview</h2>
-          <p>Exactly what inspectors see after scanning the QR code. Dynamically loaded from the database.</p>
+          <p>Preview of active questions and answer choices, loaded from the database.</p>
         </div>
       </div>
       <div id="previewList" class="preview-list"></div>
@@ -231,6 +248,7 @@
           <option value="">Any result</option>
           <option value="PASS">PASS only</option>
           <option value="FAIL">FAIL only</option>
+          <option value="EXPIRED">EXPIRED only</option>
         </select>
         <button id="loadRecordsBtn" type="button" class="btn-primary">Apply Filters</button>
       </div>
@@ -387,7 +405,7 @@
 
   </div><!-- /appView -->
 
-  <script src="admin.js?v=202610291602"></script>
+  <script src="admin.js?v=20261104-mode-fixes"></script>
 
   <!-- ERROR MODAL -->
   <div id="errorModal" class="modal">

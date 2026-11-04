@@ -29,16 +29,15 @@ function getSessionSecret() {
 }
 
 function isValidSession(token) {
-  if (!token) return false;
-  if (sessions.has(token)) return true;
+  if (typeof token !== 'string' || sessions.has(`revoked:${token}`)) return false;
   try {
     const parts = token.split('.');
     if (parts.length !== 2) return false;
     const [payload, sig] = parts;
     const expectedSig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
-    if (sig !== expectedSig) return false;
-    const ts = parseInt(payload, 10);
-    if (Number.isFinite(ts) && (Date.now() - ts) < 7 * 24 * 60 * 60 * 1000) {
+    if (sig.length !== expectedSig.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) return false;
+    const ts = Number(payload.split(':')[0]);
+    if (Number.isFinite(ts) && ts > 0 && ts <= Date.now() && (Date.now() - ts) < 7 * 24 * 60 * 60 * 1000) {
       return true;
     }
   } catch {
@@ -60,6 +59,9 @@ function resolveTemplatePath(fileName) {
 }
 
 function getTables(req) {
+  if (req.query.mode !== undefined && !['ladder', 'fire', 'firstaid'].includes(req.query.mode)) {
+    throw Object.assign(new Error('Invalid inspection mode.'), { status: 400 });
+  }
   const mode = req.query.mode === 'fire' ? 'fire' : req.query.mode === 'firstaid' ? 'firstaid' : 'ladder';
   if (mode === 'fire') {
     return {
@@ -95,6 +97,7 @@ const pool = new Pool({
   ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : undefined,
   max: 5,
 });
+app.locals.pool = pool;
 
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
@@ -146,12 +149,12 @@ function validateQuestions(questions) {
   const errors = [];
   const seen = new Set();
   const validTypes = new Set(['decision', 'yes_no', 'multiple_choice', 'text', 'long_text', 'number', 'date']);
-  const validSections = new Set(['general', 'extension', 'step']);
+  const validSections = new Set(['section_1', 'section_2', 'general', 'extension', 'step', 'fire', 'firstaid']);
 
   questions.forEach((q, index) => {
     const row = index + 2;
     if (!q.question) errors.push(`Row ${row}: missing question text.`);
-    if (!validSections.has(q.category)) errors.push(`Row ${row}: invalid section "${q.category}". Use general, extension, or step.`);
+    if (!validSections.has(q.category)) errors.push(`Row ${row}: invalid section "${q.category}".`);
     if (!validTypes.has(q.question_type)) errors.push(`Row ${row}: invalid question type "${q.question_type}".`);
     if (!Number.isFinite(q.display_order) || q.display_order <= 0) errors.push(`Row ${row}: invalid question number/order.`);
     const key = `${q.category}|${q.question.toLowerCase()}`;
@@ -169,15 +172,16 @@ function validateQuestions(questions) {
 
 async function getQuestions(mode = 'ladder') {
   const tables = getTables({ query: { mode } });
-  const isLadder = mode !== 'fire' && mode !== 'firstaid';
-  const query = isLadder
-    ? `select id, category, question, display_order, is_required, is_active, created_at, updated_at from ${tables.points} order by display_order, id`
-    : `select id, '${mode}' as category, question, display_order, is_required, is_active, created_at, updated_at from ${tables.points} order by display_order, id`;
+  const query = `select id, category, question, display_order, is_required, is_active, question_type, placeholder, field_key, created_at, updated_at from ${tables.points} order by display_order, id`;
+
+
+
 
   const { rows: questions } = await pool.query(query);
   const { rows: options } = await pool.query(`
     select id, question_id, option_label, option_value, sort_order, is_fail_value, is_active
     from ${tables.options}
+    where is_active = true
     order by sort_order, id
   `);
   const grouped = new Map();
@@ -187,7 +191,10 @@ async function getQuestions(mode = 'ladder') {
   }
   return questions.map(q => ({
     ...q,
-    question_type: 'decision',
+    category: q.category || (mode === 'fire' ? 'fire' : mode === 'firstaid' ? 'firstaid' : 'general'),
+    question_type: q.question_type || 'decision',
+    placeholder: q.placeholder || '',
+    field_key: q.field_key || '',
     allow_remarks: true,
     options: grouped.get(q.id) || []
   }));
@@ -195,24 +202,66 @@ async function getQuestions(mode = 'ladder') {
 
 async function replaceOptions(client, questionId, options = [], mode = 'ladder') {
   const tables = getTables({query: {mode}});
-  await client.query(`delete from ${tables.options} where question_id = $1`, [questionId]);
+  // Keep option IDs stable and retain removed options for historical references.
+  const { rows: existing } = await client.query(`select id, option_value from ${tables.options} where question_id = $1`, [questionId]);
+  await client.query(`update ${tables.options} set is_active = false where question_id = $1`, [questionId]);
   for (const [index, option] of options.entries()) {
-    await client.query(
-      `insert into ${tables.options} (question_id, option_label, option_value, sort_order, is_fail_value, is_active)
-       values ($1, $2, $3, $4, $5, true)`,
-      [questionId, option.option_label, option.option_value, option.sort_order || index + 1, !!option.is_fail_value],
-    );
+    const previous = existing.find(o => o.option_value === option.option_value);
+    if (previous) {
+      await client.query(`update ${tables.options} set option_label=$1, sort_order=$2, is_fail_value=$3, is_active=true where id=$4`,
+        [option.option_label, index + 1, option.is_fail_value === true, previous.id]);
+    } else {
+      await client.query(
+        `insert into ${tables.options} (question_id, option_label, option_value, sort_order, is_fail_value, is_active)
+         values ($1, $2, $3, $4, $5, true)`,
+        [questionId, option.option_label, option.option_value, index + 1, option.is_fail_value === true],
+      );
+    }
   }
+}
+
+function questionData(body, mode, existing = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw Object.assign(new Error('A question object is required.'), { status: 400 });
+  }
+  const data = { category: mode === 'fire' ? 'fire' : mode === 'firstaid' ? 'firstaid' : 'general',
+    question_type: 'decision', is_active: true, is_required: true, placeholder: '', field_key: '', ...existing, ...body };
+  for (const key of ['question', 'category', 'question_type', 'placeholder', 'field_key']) {
+    if (typeof data[key] !== 'string') throw Object.assign(new Error(`Invalid ${key}.`), { status: 400 });
+    data[key] = data[key].trim();
+  }
+  const sections = ['section_1', 'section_2', ...(mode === 'fire' ? ['fire', 'fire_extinguisher', 'general'] : mode === 'firstaid' ? ['firstaid', 'general'] : ['general', 'extension', 'step'])];
+  if (!data.question || !sections.includes(data.category) || !['decision', 'yes_no', 'multiple_choice', 'text', 'long_text', 'number', 'date'].includes(data.question_type)) {
+    throw Object.assign(new Error('Question text, section, and question type must be valid.'), { status: 400 });
+  }
+  if (!Number.isSafeInteger(data.display_order) || data.display_order < 1) throw Object.assign(new Error('Sort order must be a positive whole number.'), { status: 400 });
+  if (typeof data.is_active !== 'boolean' || typeof data.is_required !== 'boolean') throw Object.assign(new Error('Active and required must be booleans.'), { status: 400 });
+  if (body.options !== undefined) {
+    if (!Array.isArray(body.options)) throw Object.assign(new Error('Options must be an array.'), { status: 400 });
+    const seen = new Set();
+    data.options = body.options.map(option => {
+      if (!option || typeof option.option_label !== 'string' || typeof option.option_value !== 'string' || !option.option_label.trim() || !option.option_value.trim()) {
+        throw Object.assign(new Error('Each option needs a label and value.'), { status: 400 });
+      }
+      const value = option.option_value.trim();
+      if (seen.has(value)) throw Object.assign(new Error('Option values must be unique.'), { status: 400 });
+      seen.add(value);
+      return { ...option, option_label: option.option_label.trim(), option_value: value };
+    });
+  }
+  if (['decision', 'yes_no', 'multiple_choice'].includes(data.question_type) && data.options?.length === 0) {
+    throw Object.assign(new Error('Selectable questions require at least one option.'), { status: 400 });
+  }
+  return data;
 }
 
 app.post('/api/login', (req, res) => {
   const expected = process.env.ADMIN_PASSWORD || '';
   const supplied = String(req.body?.password || '');
   if (!expected || supplied !== expected) return res.status(401).json({ error: 'Invalid password' });
-  const ts = Date.now().toString();
+  const ts = `${Date.now()}:${crypto.randomBytes(16).toString('hex')}`;
   const sig = crypto.createHmac('sha256', getSessionSecret()).update(ts).digest('hex');
   const token = `${ts}.${sig}`;
-  sessions.add(token);
   const isSecure = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
   res.cookie('admin_session', token, {
     httpOnly: true,
@@ -226,6 +275,7 @@ app.post('/api/login', (req, res) => {
 app.post('/api/logout', requireAdmin, (req, res) => {
   if (req.cookies?.admin_session) {
     sessions.delete(req.cookies.admin_session);
+    sessions.add(`revoked:${req.cookies.admin_session}`);
   }
   res.clearCookie('admin_session');
   res.json({ ok: true });
@@ -244,77 +294,133 @@ app.get('/api/questions', requireAdmin, async (req, res, next) => {
 });
 
 app.post('/api/questions', requireAdmin, async (req, res, next) => {
-  const q = req.body;
-  const client = await pool.connect();
-  const isLadder = req.query.mode !== 'fire' && req.query.mode !== 'firstaid';
+  let client;
   try {
+    const tables = getTables(req);
+    const q = questionData({ options: [], ...req.body }, req.query.mode);
+    client = await pool.connect();
     await client.query('begin');
-    const { rows } = isLadder
-      ? await client.query(
-          `insert into ${getTables(req).points} (category, question, display_order, is_required, is_active)
-           values ($1, $2, $3, $4, $5)
-           returning id`,
-          [q.category || 'general', q.question, q.display_order, !!q.is_required, q.is_active !== false],
-        )
-      : await client.query(
-          `insert into ${getTables(req).points} (question, display_order, is_required, is_active)
-           values ($1, $2, $3, $4)
-           returning id`,
-          [q.question, q.display_order, !!q.is_required, q.is_active !== false],
-        );
+    const { rows } = await client.query(
+      `insert into ${tables.points} (category, question, display_order, is_required, is_active, question_type, placeholder, field_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       returning id`,
+      [
+        q.category,
+        q.question,
+        q.display_order,
+        !!q.is_required,
+        q.is_active !== false,
+        q.question_type || 'decision',
+        q.placeholder || '',
+        q.field_key || ''
+      ]
+    );
     await replaceOptions(client, rows[0].id, q.options || [], req.query.mode);
     await client.query('commit');
     res.json({ id: rows[0].id });
   } catch (error) {
-    await client.query('rollback');
+    if (client) await client.query('rollback');
     next(error);
   } finally {
-    client.release();
+    client?.release();
   }
 });
 
 app.put('/api/questions/:id', requireAdmin, async (req, res, next) => {
-  const q = req.body;
-  const client = await pool.connect();
-  const isLadder = req.query.mode !== 'fire' && req.query.mode !== 'firstaid';
+  let client;
   try {
+    const tables = getTables(req);
+    client = await pool.connect();
     await client.query('begin');
-    if (isLadder) {
-      await client.query(
-        `update ${getTables(req).points}
-            set category=$1, question=$2, display_order=$3,
-                is_required=$4, is_active=$5, updated_at=now()
-          where id=$6`,
-        [q.category || 'general', q.question, q.display_order, !!q.is_required, q.is_active !== false, req.params.id],
-      );
-    } else {
-      await client.query(
-        `update ${getTables(req).points}
-            set question=$1, display_order=$2,
-                is_required=$3, is_active=$4, updated_at=now()
-          where id=$5`,
-        [q.question, q.display_order, !!q.is_required, q.is_active !== false, req.params.id],
-      );
-    }
-    await replaceOptions(client, req.params.id, q.options || [], req.query.mode);
+    const { rows: existing } = await client.query(`select * from ${tables.points} where id=$1 for update`, [req.params.id]);
+    if (!existing.length) throw Object.assign(new Error('Question not found.'), { status: 404 });
+    const q = questionData(req.body, req.query.mode, existing[0]);
+    await client.query(
+      `update ${tables.points}
+          set category=$1, question=$2, display_order=$3,
+              is_required=$4, is_active=$5, question_type=$6,
+              placeholder=$7, field_key=$8, updated_at=now()
+        where id=$9`,
+      [
+        q.category,
+        q.question,
+        q.display_order,
+        !!q.is_required,
+        q.is_active !== false,
+        q.question_type || 'decision',
+        q.placeholder || '',
+        q.field_key || '',
+        req.params.id
+      ]
+    );
+    if (q.options !== undefined) await replaceOptions(client, req.params.id, q.options, req.query.mode);
     await client.query('commit');
     res.json({ ok: true });
   } catch (error) {
-    await client.query('rollback');
+    if (client) await client.query('rollback');
     next(error);
   } finally {
-    client.release();
+    client?.release();
+  }
+});
+
+app.patch('/api/questions/:id/active', requireAdmin, async (req, res, next) => {
+  try {
+    const tables = getTables(req);
+    if (typeof req.body?.is_active !== 'boolean') return res.status(400).json({ error: 'Active must be a boolean.' });
+    const { rows } = await pool.query(`update ${tables.points} set is_active=$1, updated_at=now() where id=$2 returning id, is_active`, [req.body.is_active, req.params.id]);
+    if (!rows.length) return res.status(404).json({ error: 'Question not found.' });
+    res.json(rows[0]);
+  } catch (error) {
+    next(error);
   }
 });
 
 app.delete('/api/questions/:id', requireAdmin, async (req, res, next) => {
   try {
-    await pool.query(`update ${getTables(req).points} set is_active=false, updated_at=now() where id=$1`, [req.params.id]);
+    const { rowCount } = await pool.query(`update ${getTables(req).points} set is_active=false, updated_at=now() where id=$1`, [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: 'Question not found.' });
     res.json({ ok: true });
   } catch (error) {
     next(error);
   }
 });
+
+function inspectionFilters(req) {
+  const mode = req.query.mode || 'ladder';
+  getTables(req);
+  const equipment = mode === 'fire' ? 'point_no' : mode === 'firstaid' ? 'box_no' : 'ladder_no';
+  const location = mode === 'ladder' ? 'section' : 'location';
+  const filters = [];
+  const values = [];
+  for (const name of ['from', 'to']) {
+    if (!req.query[name]) continue;
+    const date = req.query[name];
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) {
+      throw Object.assign(new Error('Invalid date filter.'), { status: 400 });
+    }
+    values.push(date);
+    filters.push(`i.inspection_date ${name === 'from' ? '>=' : '<='} $${values.length}`);
+  }
+  if (req.query.from && req.query.to && req.query.from > req.query.to) throw Object.assign(new Error('From date must be before or equal to To date.'), { status: 400 });
+  if (req.query.ladder) {
+    values.push(`%${req.query.ladder}%`);
+    filters.push(`(i.${equipment} ilike $${values.length} or i.${location} ilike $${values.length})`);
+  }
+  if (req.query.inspector) { values.push(`%${req.query.inspector}%`); filters.push(`i.inspector_name ilike $${values.length}`); }
+  if (req.query.status) {
+    if (!['PASS', 'FAIL', 'EXPIRED'].includes(req.query.status)) throw Object.assign(new Error('Invalid result filter.'), { status: 400 });
+    values.push(req.query.status); filters.push(`i.overall_result = $${values.length}`);
+  }
+  return { where: filters.length ? `where ${filters.join(' and ')}` : '', values };
+}
+
+function dateOnly(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value.slice(0, 10);
+  // PostgreSQL DATE values are calendar dates, independent of the server timezone.
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+}
 
 app.get('/api/inspections', requireAdmin, async (req, res, next) => {
   try {
@@ -329,19 +435,12 @@ app.get('/api/inspections', requireAdmin, async (req, res, next) => {
     const typeExpr = isFire ? 'i.extinguisher_type' : isFirstAid ? "''" : 'i.ladder_type';
     const pressureExpr = isFire ? 'i.pressure_weight' : 'null';
 
-    const filters = [];
-    const values = [];
-    if (req.query.from) { values.push(req.query.from); filters.push(`i.inspection_date >= $${values.length}`); }
-    if (req.query.to) { values.push(req.query.to); filters.push(`i.inspection_date <= $${values.length}`); }
-    if (req.query.ladder) { values.push(`%${req.query.ladder}%`); filters.push(`i.${ladderNoCol} ilike $${values.length}`); }
-    if (req.query.inspector) { values.push(`%${req.query.inspector}%`); filters.push(`i.inspector_name ilike $${values.length}`); }
-    if (req.query.status) { values.push(req.query.status); filters.push(`i.overall_result = $${values.length}`); }
-    const where = filters.length ? `where ${filters.join(' and ')}` : '';
+    const { where, values } = inspectionFilters(req);
     const { rows } = await pool.query(`
       select i.id, i.inspection_date, i.${ladderNoCol} as ladder_no, i.${sectionCol} as section,
              ${heightExpr} as height_feet, ${typeExpr} as ladder_type,
              ${pressureExpr} as pressure_weight,
-             i.inspector_name, i.overall_result, i.remarks, i.created_at,
+             i.inspector_name, i.epf_number, i.overall_result, i.remarks, i.created_at,
              count(r.id)::int as answer_count,
              count(*) filter (where r.result = 'FAIL' or r.result = 'EXPIRED')::int as fail_count
         from ${t.inspections} i
@@ -351,7 +450,7 @@ app.get('/api/inspections', requireAdmin, async (req, res, next) => {
        order by i.inspection_date asc, i.created_at asc
        limit 500
     `, values);
-    res.json(rows);
+    res.json(rows.map(row => ({ ...row, inspection_date: dateOnly(row.inspection_date) })));
   } catch (error) {
     next(error);
   }
@@ -405,14 +504,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     const mode = req.query.mode === 'fire' ? 'fire' : req.query.mode === 'firstaid' ? 'firstaid' : 'ladder';
 
     if (mode === 'firstaid') {
-      const filters = [];
-      const values = [];
-      if (req.query.from) { values.push(req.query.from); filters.push(`i.inspection_date >= $${values.length}`); }
-      if (req.query.to) { values.push(req.query.to); filters.push(`i.inspection_date <= $${values.length}`); }
-      if (req.query.ladder) { values.push(`%${req.query.ladder}%`); filters.push(`(i.box_no ilike $${values.length} or i.location ilike $${values.length})`); }
-      if (req.query.inspector) { values.push(`%${req.query.inspector}%`); filters.push(`i.inspector_name ilike $${values.length}`); }
-      if (req.query.status) { values.push(req.query.status); filters.push(`i.overall_result = $${values.length}`); }
-      const where = filters.length ? `where ${filters.join(' and ')}` : '';
+      const { where, values } = inspectionFilters(req);
 
       const { rows } = await pool.query(`
         select i.id as inspection_id,
@@ -440,7 +532,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
         if (!inspectionsMap.has(r.inspection_id)) {
           inspectionsMap.set(r.inspection_id, {
             'Inspection ID': r.inspection_id,
-            'Date': r.inspection_date ? r.inspection_date.toISOString().split('T')[0] : '',
+            'Date': dateOnly(r.inspection_date),
             'Box No': r.box_no,
             'Location': r.location,
             'Inspector Name': r.inspector_name,
@@ -540,14 +632,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     }
 
     if (mode === 'fire') {
-      const filters = [];
-      const values = [];
-      if (req.query.from) { values.push(req.query.from); filters.push(`i.inspection_date >= ${values.length}`); }
-      if (req.query.to) { values.push(req.query.to); filters.push(`i.inspection_date <= ${values.length}`); }
-      if (req.query.ladder) { values.push(`%${req.query.ladder}%`); filters.push(`(i.point_no ilike ${values.length} or i.location ilike ${values.length})`); }
-      if (req.query.inspector) { values.push(`%${req.query.inspector}%`); filters.push(`i.inspector_name ilike ${values.length}`); }
-      if (req.query.status) { values.push(req.query.status); filters.push(`i.overall_result = ${values.length}`); }
-      const where = filters.length ? `where ${filters.join(' and ')}` : '';
+      const { where, values } = inspectionFilters(req);
 
       const { rows } = await pool.query(`
         select i.id as inspection_id,
@@ -578,7 +663,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
         if (!inspectionsMap.has(r.inspection_id)) {
           inspectionsMap.set(r.inspection_id, {
             'Inspection ID': r.inspection_id,
-            'Date': r.inspection_date ? r.inspection_date.toISOString().split('T')[0] : '',
+            'Date': dateOnly(r.inspection_date),
             'Point No.': r.point_no,
             'Location': r.location,
             'Type': r.extinguisher_type,
@@ -720,15 +805,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     }
 
     // Default: Ladder
-    const filters = [];
-    const values = [];
-    if (req.query.from) { values.push(req.query.from); filters.push(`i.inspection_date >= $${values.length}`); }
-    if (req.query.to) { values.push(req.query.to); filters.push(`i.inspection_date <= $${values.length}`); }
-    if (req.query.ladder) { values.push(`%${req.query.ladder}%`); filters.push(`i.ladder_no ilike $${values.length}`); }
-    if (req.query.inspector) { values.push(`%${req.query.inspector}%`); filters.push(`i.inspector_name ilike $${values.length}`); }
-    if (req.query.status) { values.push(req.query.status); filters.push(`i.overall_result = $${values.length}`); }
-    
-    const where = filters.length ? `where ${filters.join(' and ')}` : '';
+    const { where, values } = inspectionFilters(req);
 
     const { rows } = await pool.query(`
       select i.id as inspection_id,
@@ -745,7 +822,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
              r.display_order_snapshot      as question_number,
              r.category_snapshot           as category,
              r.question_text_snapshot      as question,
-             r.result                      as answer,
+             coalesce(r.answer_label, r.result) as answer,
              r.remarks                     as answer_remarks
         from inspections i
         left join inspection_results r on r.inspection_id = i.id
@@ -758,7 +835,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
       if (!inspectionsMap.has(r.inspection_id)) {
         inspectionsMap.set(r.inspection_id, {
           'Inspection ID': r.inspection_id,
-          'Date': r.inspection_date ? r.inspection_date.toISOString().split('T')[0] : '',
+          'Date': dateOnly(r.inspection_date),
           'Ladder No.': r.ladder_no,
           'Section': r.section,
           'Feet': r.height_feet,
@@ -1002,6 +1079,7 @@ app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
     let activeSheet = null;
     if (requestedSheetName) {
       activeSheet = sheetList.find(s => s.title === requestedSheetName);
+      if (!activeSheet) return res.status(404).json({ error: 'Requested worksheet not found.' });
     }
     if (!activeSheet && targetGid) {
       activeSheet = sheetList.find(s => String(s.sheetId) === String(targetGid));
@@ -1021,7 +1099,7 @@ app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
     // Fetch values for the active sheet
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `'${activeSheet.title}'`,
+      range: `'${activeSheet.title.replace(/'/g, "''")}'`,
       valueRenderOption: 'FORMATTED_VALUE'
     });
 
@@ -1034,7 +1112,7 @@ app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
       if (headerIdx === -1) headerIdx = 0;
 
       headers = rawValues[headerIdx].map((h, i) => {
-        const val = String(h || '').trim();
+        const val = String(h ?? '').trim();
         return val.length > 0 ? val : `Column ${i + 1}`;
       });
 
@@ -1115,6 +1193,7 @@ app.get('/api/sheets/export', requireAdmin, async (req, res, next) => {
     let activeSheet = null;
     if (requestedSheetName) {
       activeSheet = sheetList.find(s => s.properties.title === requestedSheetName);
+      if (!activeSheet) return res.status(404).json({ error: 'Requested worksheet not found.' });
     }
     if (!activeSheet && targetGid) {
       activeSheet = sheetList.find(s => String(s.properties.sheetId) === String(targetGid));
@@ -1123,10 +1202,11 @@ app.get('/api/sheets/export', requireAdmin, async (req, res, next) => {
       activeSheet = sheetList[0];
     }
 
-    const sheetTitle = activeSheet ? activeSheet.properties.title : 'GoogleSheet';
+    if (!activeSheet) return res.status(404).json({ error: 'No sheets found in spreadsheet.' });
+    const sheetTitle = activeSheet.properties.title;
     const sheetData = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `'${sheetTitle}'`,
+      range: `'${sheetTitle.replace(/'/g, "''")}'`,
       valueRenderOption: 'FORMATTED_VALUE'
     });
 
@@ -1165,12 +1245,12 @@ app.get('/', (req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  console.error(error);
-  res.status(500).json({ error: error.message || 'Server error' });
+  if (!error.status || error.status >= 500) console.error(error);
+  res.status(error.status || (error.code === '22P02' ? 400 : 500)).json({ error: error.message || 'Server error' });
 });
 
 const port = Number(process.env.PORT || 8081);
-if (!process.env.VERCEL) {
+if (!process.env.VERCEL && process.env.NODE_ENV !== 'test') {
   app.listen(port, () => {
     console.log(`Safety Inspection Admin running on http://localhost:${port}`);
   });

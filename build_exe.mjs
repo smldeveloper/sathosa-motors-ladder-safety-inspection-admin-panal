@@ -68,13 +68,13 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 const sessions = new Set();
 `;
 
-const getTablesIdx = serverCode.indexOf('function getTables(req)');
-if (getTablesIdx === -1) {
-  console.error('Could not find getTables function in server.js');
+const helpersIdx = serverCode.indexOf('function getSessionSecret()');
+if (helpersIdx === -1) {
+  console.error('Could not find backend helpers in server.js');
   process.exit(1);
 }
 
-let bodyCode = serverCode.substring(getTablesIdx);
+let bodyCode = serverCode.substring(helpersIdx);
 bodyCode = bodyCode.replace(/\b__dirname\b/g, '__exeDir');
 bodyCode = bodyCode.replace(/export\s+default\s+app;\s*$/, '');
 

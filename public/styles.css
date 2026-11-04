@@ -723,6 +723,8 @@ button, .button, a.button {
 .badge-active   { background: #dbeafe; color: #1d4ed8; }
 .badge-inactive { background: #f1f5f9; color: #64748b; }
 .badge-required { background: var(--amber-light); color: var(--amber-dark); }
+.badge-section-1 { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; font-weight: 600; }
+.badge-section-2 { background: #e0e7ff; color: #3730a3; border: 1px solid #a5b4fc; font-weight: 600; }
 .badge-section-general   { background: #f0fdf4; color: #15803d; border: 1px solid #86efac; }
 .badge-section-extension { background: #eff6ff; color: #1d4ed8; border: 1px solid #93c5fd; }
 .badge-section-step      { background: #fdf4ff; color: #7e22ce; border: 1px solid #d8b4fe; }
