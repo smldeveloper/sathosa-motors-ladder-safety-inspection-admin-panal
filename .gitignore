@@ -6,3 +6,10 @@ uploads/
 dist/
 setup_installer/
 
+# Google Cloud credentials
+google-service-account.json
+*serviceaccount*.json
+hsc-admin*.json
+
+
+.vercel

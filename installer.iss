@@ -57,6 +57,8 @@ Source: "dist\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Configuration (never overwrite existing database credentials on update/reinstall)
 Source: "dist\.env.example"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\.env"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall
+Source: "dist\google-service-account.json"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsneveruninstall skipifsourcedoesntexist
+
 
 ; Excel export templates
 Source: "dist\*.xlsx"; DestDir: "{app}"; Flags: ignoreversion

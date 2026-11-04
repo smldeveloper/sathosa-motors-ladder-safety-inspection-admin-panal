@@ -45,6 +45,10 @@
         <button id="btnModeFire" class="btn-primary" style="padding: 20px; font-size: 1.1rem; justify-content: center; background: var(--bg); border: 2px solid var(--border); color: var(--text-1); cursor: pointer;">
           🧯 Fire Extinguisher Admin
         </button>
+        <button id="btnModeSheet" class="btn-primary" style="padding: 20px; font-size: 1.1rem; justify-content: center; background: var(--bg); border: 2px solid var(--border); color: var(--text-1); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;">
+          <span>📊 Google Sheet Viewer</span>
+          <span style="font-size: 0.72rem; font-weight: 700; background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.05em;">Live API</span>
+        </button>
       </div>
     </div>
   </main>
@@ -251,9 +255,139 @@
       </div>
     </section>
 
+    <!-- ── GOOGLE SHEET VIEWER TAB ── -->
+    <section id="sheetsTab" class="panel hidden">
+      <div class="panel-head">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <h2>Google Sheet Live Viewer</h2>
+            <span id="sheetLiveBadge" class="badge" style="background:#e0f2fe; color:#0369a1; border-color:#bae6fd; font-size:0.75rem; font-weight:700;">LIVE API</span>
+          </div>
+          <p id="sheetSubtitle">Spreadsheet: Sathosa Motors Inspection · Sheet GID: 1278333149</p>
+        </div>
+        <div class="panel-head-actions" style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <div class="btn-group" style="display:inline-flex; border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden;">
+            <button id="btnSheetViewTable" type="button" class="btn-secondary btn-sm active" style="border:none; border-radius:0;">📑 Data Table</button>
+            <button id="btnSheetViewEmbed" type="button" class="btn-secondary btn-sm" style="border:none; border-radius:0;">🖥️ Embedded View</button>
+          </div>
+          <button id="btnRefreshSheet" type="button" class="btn-secondary btn-sm">🔄 Refresh</button>
+          <button id="btnExportSheetXlsx" type="button" class="btn-secondary btn-sm">⬇️ Export Excel</button>
+          <a id="btnOpenSheetUrl" href="https://docs.google.com/spreadsheets/d/19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE/edit?pli=1&gid=1278333149#gid=1278333149" target="_blank" rel="noopener noreferrer" class="btn-secondary btn-sm" style="text-decoration:none; display:inline-flex; align-items:center;">
+            ↗ Open in Google Sheets
+          </a>
+        </div>
+      </div>
+
+      <!-- Permission & Sharing Guide Box (shown if 403 or unshared) -->
+      <div id="sheetPermissionBox" class="sheet-alert-card hidden" style="margin-bottom: 20px;">
+        <div style="display:flex; gap:16px; align-items:flex-start;">
+          <div style="font-size: 2.2rem; line-height: 1;">🛡️</div>
+          <div style="flex:1;">
+            <h3 style="margin:0 0 6px 0; color:var(--text); font-size:1.1rem;">Google Sheet Access Required</h3>
+            <p style="color:var(--text-2); font-size:0.9rem; margin-bottom:12px;">
+              Google Sheets requires this spreadsheet to be shared with your Google Cloud Service Account before data can be loaded via the API.
+            </p>
+
+            <div style="background:var(--surface); border:1px solid var(--border-2); border-radius:8px; padding:12px 16px; margin-bottom:14px;">
+              <div style="font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; color:var(--text-3); font-weight:700; margin-bottom:4px;">
+                Service Account Email (Share with this address):
+              </div>
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                <code id="saEmailDisplay" style="font-family:var(--mono); font-size:0.92rem; color:var(--text); font-weight:600; word-break:break-all;">
+                  hsc-admin@hsc-admin-513009.iam.gserviceaccount.com
+                </code>
+                <button id="copySaEmailBtn" type="button" class="btn-primary btn-sm" style="padding:6px 12px; font-size:0.8rem;">
+                  📋 Copy Email
+                </button>
+              </div>
+            </div>
+
+            <div style="font-size:0.88rem; color:var(--text-2); margin-bottom:16px;">
+              <strong>Quick 3-Step Setup:</strong>
+              <ol style="margin:6px 0 0 20px; line-height:1.6;">
+                <li>Open the Google Sheet by clicking <strong>"Open Google Sheet"</strong> below.</li>
+                <li>In Google Sheets, click the blue <strong>"Share"</strong> button in the top right.</li>
+                <li>Paste the copied Service Account email, set permission to <strong>Viewer</strong> (or Editor), and click <strong>Done</strong>.</li>
+              </ol>
+            </div>
+
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+              <a href="https://docs.google.com/spreadsheets/d/19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE/edit?pli=1&gid=1278333149#gid=1278333149" target="_blank" rel="noopener noreferrer" class="btn-primary" style="text-decoration:none; display:inline-flex; align-items:center; font-size:0.9rem;">
+                ↗ Open Google Sheet to Share
+              </a>
+              <button id="btnRetrySheetAccess" type="button" class="btn-secondary" style="font-size:0.9rem;">
+                🔄 Test Access Again
+              </button>
+              <button id="btnFallbackEmbed" type="button" class="btn-secondary" style="font-size:0.9rem;">
+                🖥️ View Embedded Sheet Instead
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sheet Tabs Strip (for switching worksheets) -->
+      <div id="sheetTabsStrip" class="sheet-tabs-strip" style="display:flex; gap:8px; margin-bottom:14px; overflow-x:auto; padding-bottom:4px;"></div>
+
+      <!-- Stats Bar -->
+      <div id="sheetStatsRow" class="stats-row" style="margin-bottom:14px;"></div>
+
+      <!-- TABLE VIEW CONTAINER -->
+      <div id="sheetTableViewContainer">
+        <!-- Toolbar & Filter -->
+        <div class="filters" style="margin-bottom:12px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <input id="filterSheetSearch" type="search" placeholder="🔍 Search across all columns…" style="flex:2; min-width:200px;">
+          <select id="sheetPageSize" style="max-width:140px;" aria-label="Rows per page">
+            <option value="25">25 rows / page</option>
+            <option value="50" selected>50 rows / page</option>
+            <option value="100">100 rows / page</option>
+            <option value="all">All rows</option>
+          </select>
+          <div id="sheetSearchCount" style="color:var(--text-2); font-size:0.85rem; display:flex; align-items:center; margin-left:auto;"></div>
+        </div>
+
+        <!-- Table Wrap -->
+        <div class="table-wrap" style="max-height: 600px; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-md);">
+          <table id="googleSheetTable" class="sheet-data-table">
+            <thead>
+              <tr id="sheetHeaderRow">
+                <th>#</th>
+                <th style="padding:16px; color:var(--text-3);">Loading headers…</th>
+              </tr>
+            </thead>
+            <tbody id="sheetBodyRows">
+              <tr>
+                <td colspan="2" style="padding:36px; text-align:center; color:var(--text-3);">
+                  <div class="spinner" style="margin: 0 auto 10px auto;"></div>
+                  Loading Google Sheet data…
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Pagination Bar -->
+        <div id="sheetPaginationBar" style="display:flex; justify-content:space-between; align-items:center; margin-top:14px; flex-wrap:wrap; gap:10px;">
+          <div id="sheetPaginationInfo" style="font-size:0.85rem; color:var(--text-2);"></div>
+          <div id="sheetPaginationNav" style="display:flex; gap:6px;"></div>
+        </div>
+      </div>
+
+      <!-- EMBEDDED IFRAME CONTAINER -->
+      <div id="sheetEmbedViewContainer" class="hidden" style="margin-top:10px;">
+        <div style="background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius-md); padding:10px 14px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; color:var(--text-2);">
+          <span>💡 <strong>Embedded View:</strong> Interactive Google Sheets editor/viewer directly inside the app. Sign in with your Google account in browser if prompted.</span>
+          <a href="https://docs.google.com/spreadsheets/d/19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE/edit?pli=1&gid=1278333149#gid=1278333149" target="_blank" rel="noopener noreferrer" style="color:var(--text); font-weight:600; text-decoration:underline;">Full Screen ↗</a>
+        </div>
+        <div style="width:100%; height:75vh; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; background:#fff; box-shadow:var(--shadow-md);">
+          <iframe id="googleSheetIframe" src="https://docs.google.com/spreadsheets/d/19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE/edit?gid=1278333149&widget=true&headers=false" style="width:100%; height:100%; border:none;" allowfullscreen></iframe>
+        </div>
+      </div>
+    </section>
+
   </div><!-- /appView -->
 
-  <script src="admin.js?v=1791266489082"></script>
+  <script src="admin.js?v=202610291602"></script>
 
   <!-- ERROR MODAL -->
   <div id="errorModal" class="modal">

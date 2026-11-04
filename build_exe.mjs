@@ -58,8 +58,10 @@ const cookieParser = require('cookie-parser');
 const multer = require('multer');
 const pg = require('pg');
 const XLSX = require('xlsx');
+const { google } = require('googleapis');
 
 const { Pool } = pg;
+
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -223,6 +225,14 @@ if (fs.existsSync(icoPath)) {
   fs.copyFileSync(icoPath, path.join(DIST, 'app.ico'));
   console.log('  ✔ app.ico');
 }
+
+// Copy google-service-account.json if present
+const saFile = path.join(PROJECT, 'google-service-account.json');
+if (fs.existsSync(saFile)) {
+  fs.copyFileSync(saFile, path.join(DIST, 'google-service-account.json'));
+  console.log('  ✔ google-service-account.json');
+}
+
 
 // Create settings configuration batch file
 const configBat = `@echo off

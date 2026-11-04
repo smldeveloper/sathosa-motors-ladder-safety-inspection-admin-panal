@@ -113,12 +113,17 @@ function showApp(mode) {
   }
   const sub = document.querySelector('.topbar-brand .sub');
   if (sub) {
-    sub.textContent = window.adminMode === 'fire' ? 'Sathosa Motors · Fire Extinguisher Admin' : window.adminMode === 'firstaid' ? 'Sathosa Motors · First Aid Box Admin' : 'Sathosa Motors · Ladder Inspection Admin';
+    sub.textContent = window.adminMode === 'fire' ? 'Sathosa Motors · Fire Extinguisher Admin' :
+                      window.adminMode === 'firstaid' ? 'Sathosa Motors · First Aid Box Admin' :
+                      window.adminMode === 'sheet' ? 'Sathosa Motors · Google Sheet Viewer' :
+                      'Sathosa Motors · Ladder Inspection Admin';
   }
 
   const icon = document.getElementById('topbarIcon');
   if (icon) {
-    icon.textContent = window.adminMode === 'fire' ? '🧯' : window.adminMode === 'firstaid' ? '🩹' : '🪜';
+    icon.textContent = window.adminMode === 'fire' ? '🧯' :
+                       window.adminMode === 'firstaid' ? '🩹' :
+                       window.adminMode === 'sheet' ? '📊' : '🪜';
   }
   
   const thLocation = document.getElementById('thLocation');
@@ -145,10 +150,27 @@ function showApp(mode) {
   hide(q('loginView'));
   const m = q('modeSelectView'); if (m) hide(m);
   show(q('appView'));
-  loadQuestions();
   
-  const qTab = document.querySelector('.tab[data-tab="questions"]');
-  if (qTab) qTab.click();
+  const navTabs = document.querySelector('nav.tabs');
+
+  if (window.adminMode === 'sheet') {
+    if (navTabs) navTabs.classList.add('hidden');
+    document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+    const sPanel = q('sheetsTab');
+    if (sPanel) sPanel.classList.remove('hidden');
+    loadSheetData();
+  } else {
+    if (navTabs) navTabs.classList.remove('hidden');
+    document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
+    const qTab = document.querySelector('.tab[data-tab="questions"]');
+    if (qTab) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      qTab.classList.add('active');
+    }
+    const qPanel = q('questionsTab');
+    if (qPanel) qPanel.classList.remove('hidden');
+    loadQuestions();
+  }
 }
 
 q('loginForm').addEventListener('submit', async e => {
@@ -207,6 +229,7 @@ document.querySelectorAll('.tab').forEach(btn => {
 
     if (target === 'records') loadRecords();
     if (target === 'preview') renderPreview();
+    if (target === 'sheets') loadSheetData();
   });
 });
 
@@ -783,3 +806,386 @@ window.printRecord = async function(id) {
 if (q('btnModeLadder')) q('btnModeLadder').addEventListener('click', () => showApp('ladder'));
 if (q('btnModeFire')) q('btnModeFire').addEventListener('click', () => showApp('fire'));
 if (q('btnModeFirstAid')) q('btnModeFirstAid').addEventListener('click', () => showApp('firstaid'));
+if (q('btnModeSheet')) q('btnModeSheet').addEventListener('click', () => showApp('sheet'));
+
+/* ═══════════════════════════════════════════════════════════
+   GOOGLE SHEET VIEWER IMPLEMENTATION
+   ═══════════════════════════════════════════════════════════ */
+
+let currentSheetData = null;
+let currentSheetName = null;
+let sheetSearchQuery = '';
+let sheetCurrentPage = 1;
+let sheetRowsPerPage = 50;
+let sheetSortCol = -1;
+let sheetSortAsc = true;
+let sheetViewMode = 'table';
+
+async function loadSheetData(sheetName = null, forceRefresh = false) {
+  const tableBody = q('sheetBodyRows');
+  const headerRow = q('sheetHeaderRow');
+  const permBox = q('sheetPermissionBox');
+  const subtitle = q('sheetSubtitle');
+
+  if (sheetName) currentSheetName = sheetName;
+
+  if (tableBody) {
+    tableBody.innerHTML = `
+      <tr>
+        <td colspan="12" style="padding:48px; text-align:center; color:var(--text-3);">
+          <div style="font-size:2rem; margin-bottom:12px; display:inline-block; animation:spin 1s linear infinite;">🔄</div>
+          <div style="font-size:0.95rem; font-weight:600; color:var(--text-2);">Connecting to Google Sheets API…</div>
+          <div style="font-size:0.8rem; margin-top:4px;">Retrieving live data via Google Cloud Service Account</div>
+        </td>
+      </tr>
+    `;
+  }
+
+  try {
+    const url = `/sheets/data${currentSheetName ? `?sheetName=${encodeURIComponent(currentSheetName)}` : ''}`;
+    const data = await api('GET', url);
+    currentSheetData = data;
+    currentSheetName = data.activeSheet ? data.activeSheet.title : null;
+
+    if (permBox) permBox.classList.add('hidden');
+    if (subtitle) {
+      subtitle.textContent = `Spreadsheet: ${data.spreadsheetTitle || 'Safety Inspection Sheet'} · Sheet: ${data.activeSheet?.title || 'Data'} · Last synced ${new Date(data.lastUpdated).toLocaleTimeString()}`;
+    }
+
+    renderSheetTabsStrip();
+    renderSheetStats();
+    sheetCurrentPage = 1;
+    renderGoogleSheetTable();
+
+  } catch (err) {
+    console.error('Error loading Google Sheet:', err);
+    if (tableBody) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="12" style="padding:36px; text-align:center; color:var(--fail);">
+            <div style="font-size:2.2rem; margin-bottom:10px;">🛡️</div>
+            <div style="font-weight:700; font-size:1rem; margin-bottom:6px;">Google Sheet Access Required</div>
+            <div style="font-size:0.85rem; color:var(--text-2); max-width:600px; margin:0 auto 16px auto;">
+              ${esc(err.message)}
+            </div>
+            <div style="display:inline-flex; gap:10px;">
+              <button type="button" class="btn-primary btn-sm" onclick="loadSheetData(currentSheetName, true)">🔄 Try Again</button>
+              <button type="button" class="btn-secondary btn-sm" onclick="switchToSheetEmbedView()">🖥️ Switch to Embedded View</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    // Always fetch info to display the exact service account email and sharing helper
+    if (permBox) {
+      permBox.classList.remove('hidden');
+      api('GET', '/sheets/info').then(info => {
+        if (info.serviceAccountEmail && q('saEmailDisplay')) {
+          q('saEmailDisplay').textContent = info.serviceAccountEmail;
+        }
+      }).catch(() => {});
+    }
+  }
+}
+
+function renderSheetTabsStrip() {
+  const container = q('sheetTabsStrip');
+  if (!container || !currentSheetData || !currentSheetData.sheets) return;
+
+  container.innerHTML = currentSheetData.sheets.map(s => {
+    const isActive = currentSheetName ? s.title === currentSheetName : s.isTarget;
+    return `
+      <button type="button" class="sheet-tab-pill ${isActive ? 'active' : ''}" data-sheet-name="${esc(s.title)}">
+        <span>📄 ${esc(s.title)}</span>
+        ${s.rowCount ? `<span style="font-size:0.7rem; opacity:0.75;">(${s.rowCount} rows)</span>` : ''}
+      </button>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.sheet-tab-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetName = btn.dataset.sheetName;
+      loadSheetData(targetName);
+    });
+  });
+}
+
+function renderSheetStats() {
+  const container = q('sheetStatsRow');
+  if (!container || !currentSheetData) return;
+
+  container.innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Active Sheet Tab</div>
+      <div class="stat-value" style="font-size:1.15rem; word-break:break-all;">${esc(currentSheetData.activeSheet?.title || 'Sheet1')}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Rows</div>
+      <div class="stat-value">${(currentSheetData.totalRows || 0).toLocaleString()}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Columns</div>
+      <div class="stat-value">${(currentSheetData.totalCols || 0).toLocaleString()}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Google API Status</div>
+      <div class="stat-value" style="font-size:1rem; color:var(--pass);">Connected 🟢</div>
+    </div>
+  `;
+}
+
+function renderGoogleSheetTable() {
+  if (!currentSheetData) return;
+
+  const headerRow = q('sheetHeaderRow');
+  const tableBody = q('sheetBodyRows');
+  const infoEl = q('sheetPaginationInfo');
+  const navEl = q('sheetPaginationNav');
+  const countEl = q('sheetSearchCount');
+
+  const headers = currentSheetData.headers || [];
+  let rows = currentSheetData.rows || [];
+
+  // Filter rows
+  if (sheetSearchQuery) {
+    const qLower = sheetSearchQuery.toLowerCase();
+    rows = rows.filter(row => row.some(cell => String(cell || '').toLowerCase().includes(qLower)));
+  }
+
+  // Sort rows
+  if (sheetSortCol >= 0 && sheetSortCol < headers.length) {
+    const idx = sheetSortCol;
+    rows = [...rows].sort((a, b) => {
+      const valA = String(a[idx] ?? '').trim();
+      const valB = String(b[idx] ?? '').trim();
+      const numA = Number(valA);
+      const numB = Number(valB);
+      let cmp = 0;
+      if (!isNaN(numA) && !isNaN(numB) && valA !== '' && valB !== '') {
+        cmp = numA - numB;
+      } else {
+        cmp = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+      }
+      return sheetSortAsc ? cmp : -cmp;
+    });
+  }
+
+  // Render headers
+  if (headerRow) {
+    headerRow.innerHTML = `
+      <th style="width:50px; text-align:center;">#</th>
+      ${headers.map((h, i) => {
+        const isSorted = sheetSortCol === i;
+        const arrow = isSorted ? (sheetSortAsc ? ' ▲' : ' ▼') : '';
+        return `<th data-col-idx="${i}" title="Click to sort by ${esc(h)}">${esc(h)}${arrow}</th>`;
+      }).join('')}
+    `;
+
+    headerRow.querySelectorAll('th[data-col-idx]').forEach(th => {
+      th.addEventListener('click', () => {
+        const colIdx = Number(th.dataset.colIdx);
+        if (sheetSortCol === colIdx) {
+          sheetSortAsc = !sheetSortAsc;
+        } else {
+          sheetSortCol = colIdx;
+          sheetSortAsc = true;
+        }
+        renderGoogleSheetTable();
+      });
+    });
+  }
+
+  // Pagination calculation
+  const totalRows = rows.length;
+  const isAll = sheetRowsPerPage === 'all';
+  const pageSize = isAll ? totalRows : Number(sheetRowsPerPage);
+  const totalPages = isAll ? 1 : Math.max(1, Math.ceil(totalRows / pageSize));
+
+  if (sheetCurrentPage > totalPages) sheetCurrentPage = totalPages;
+  if (sheetCurrentPage < 1) sheetCurrentPage = 1;
+
+  const startIdx = isAll ? 0 : (sheetCurrentPage - 1) * pageSize;
+  const endIdx = isAll ? totalRows : Math.min(startIdx + pageSize, totalRows);
+  const pageRows = rows.slice(startIdx, endIdx);
+
+  // Render rows
+  if (tableBody) {
+    if (pageRows.length === 0) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="${headers.length + 1}" style="padding:36px; text-align:center; color:var(--text-3);">
+            ${sheetSearchQuery ? 'No matching rows found for search query.' : 'This sheet has no data rows.'}
+          </td>
+        </tr>
+      `;
+    } else {
+      tableBody.innerHTML = pageRows.map((row, rIdx) => {
+        const actualRowNo = startIdx + rIdx + 1;
+        const cellsHtml = headers.map((_, cIdx) => {
+          const val = row[cIdx] ?? '';
+          const strVal = String(val).trim();
+          let formatted = esc(strVal);
+
+          // Keyword badge formatting
+          if (strVal.toUpperCase() === 'PASS') {
+            formatted = `<span class="sheet-cell-pass">PASS</span>`;
+          } else if (strVal.toUpperCase() === 'FAIL') {
+            formatted = `<span class="sheet-cell-fail">FAIL</span>`;
+          } else if (strVal.toUpperCase() === 'EXPIRED') {
+            formatted = `<span class="sheet-cell-fail">EXPIRED</span>`;
+          } else if (strVal.startsWith('http://') || strVal.startsWith('https://')) {
+            formatted = `<a href="${esc(strVal)}" target="_blank" rel="noopener noreferrer" style="color:var(--text); text-decoration:underline;">Link ↗</a>`;
+          }
+
+          return `<td title="${esc(strVal)}">${formatted}</td>`;
+        }).join('');
+
+        return `<tr><td style="text-align:center; color:var(--text-3); font-size:0.78rem;">${actualRowNo}</td>${cellsHtml}</tr>`;
+      }).join('');
+    }
+  }
+
+  // Update stats & pagination info
+  if (countEl) {
+    countEl.textContent = sheetSearchQuery ? `Filtered: ${totalRows} of ${currentSheetData.rows?.length || 0}` : `${totalRows} rows`;
+  }
+
+  if (infoEl) {
+    if (totalRows === 0) {
+      infoEl.textContent = 'Showing 0 rows';
+    } else {
+      infoEl.textContent = `Showing rows ${startIdx + 1}–${endIdx} of ${totalRows.toLocaleString()}`;
+    }
+  }
+
+  if (navEl) {
+    if (isAll || totalPages <= 1) {
+      navEl.innerHTML = '';
+    } else {
+      let navHtml = `
+        <button class="pagination-btn" ${sheetCurrentPage <= 1 ? 'disabled' : ''} data-page="${sheetCurrentPage - 1}">◀ Prev</button>
+      `;
+
+      const maxButtons = 5;
+      let startPage = Math.max(1, sheetCurrentPage - 2);
+      let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+      if (endPage - startPage < maxButtons - 1) {
+        startPage = Math.max(1, endPage - maxButtons + 1);
+      }
+
+      if (startPage > 1) {
+        navHtml += `<button class="pagination-btn" data-page="1">1</button>`;
+        if (startPage > 2) navHtml += `<span style="padding:4px 6px; color:var(--text-3);">…</span>`;
+      }
+
+      for (let p = startPage; p <= endPage; p++) {
+        navHtml += `
+          <button class="pagination-btn ${p === sheetCurrentPage ? 'active' : ''}" data-page="${p}">${p}</button>
+        `;
+      }
+
+      if (endPage < totalPages) {
+        if (endPage < totalPages - 1) navHtml += `<span style="padding:4px 6px; color:var(--text-3);">…</span>`;
+        navHtml += `<button class="pagination-btn" data-page="${totalPages}">${totalPages}</button>`;
+      }
+
+      navHtml += `
+        <button class="pagination-btn" ${sheetCurrentPage >= totalPages ? 'disabled' : ''} data-page="${sheetCurrentPage + 1}">Next ▶</button>
+      `;
+      navEl.innerHTML = navHtml;
+
+      navEl.querySelectorAll('button[data-page]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          sheetCurrentPage = Number(btn.dataset.page);
+          renderGoogleSheetTable();
+          const tableWrap = document.querySelector('#sheetTableViewContainer .table-wrap');
+          if (tableWrap) tableWrap.scrollTop = 0;
+        });
+      });
+    }
+  }
+}
+
+function switchToSheetTableView() {
+  sheetViewMode = 'table';
+  q('btnSheetViewTable')?.classList.add('active');
+  q('btnSheetViewEmbed')?.classList.remove('active');
+  q('sheetTableViewContainer')?.classList.remove('hidden');
+  q('sheetEmbedViewContainer')?.classList.add('hidden');
+}
+
+function switchToSheetEmbedView() {
+  sheetViewMode = 'embed';
+  q('btnSheetViewEmbed')?.classList.add('active');
+  q('btnSheetViewTable')?.classList.remove('active');
+  q('sheetTableViewContainer')?.classList.add('hidden');
+  q('sheetEmbedViewContainer')?.classList.remove('hidden');
+}
+
+window.switchToSheetEmbedView = switchToSheetEmbedView;
+window.loadSheetData = loadSheetData;
+
+/* Google Sheet Toolbar Event Listeners */
+q('btnSheetViewTable')?.addEventListener('click', switchToSheetTableView);
+q('btnSheetViewEmbed')?.addEventListener('click', switchToSheetEmbedView);
+q('btnRefreshSheet')?.addEventListener('click', () => loadSheetData(currentSheetName, true));
+q('btnRetrySheetAccess')?.addEventListener('click', () => loadSheetData(currentSheetName, true));
+q('btnFallbackEmbed')?.addEventListener('click', switchToSheetEmbedView);
+
+q('filterSheetSearch')?.addEventListener('input', e => {
+  sheetSearchQuery = e.target.value.trim();
+  sheetCurrentPage = 1;
+  renderGoogleSheetTable();
+});
+
+q('sheetPageSize')?.addEventListener('change', e => {
+  sheetRowsPerPage = e.target.value;
+  sheetCurrentPage = 1;
+  renderGoogleSheetTable();
+});
+
+q('btnExportSheetXlsx')?.addEventListener('click', () => {
+  const params = new URLSearchParams();
+  if (currentSheetName) params.set('sheetName', currentSheetName);
+  window.location.href = '/api/sheets/export?' + params.toString();
+});
+
+q('copySaEmailBtn')?.addEventListener('click', () => {
+  const emailText = q('saEmailDisplay')?.textContent.trim();
+  if (!emailText) return;
+
+  const onCopied = () => {
+    const btn = q('copySaEmailBtn');
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = '✅ Copied!';
+      btn.style.background = '#059669';
+      setTimeout(() => {
+        btn.textContent = orig;
+        btn.style.background = '';
+      }, 2500);
+    }
+  };
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(emailText).then(onCopied).catch(() => fallbackCopy(emailText, onCopied));
+  } else {
+    fallbackCopy(emailText, onCopied);
+  }
+
+  function fallbackCopy(text, cb) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      cb();
+    } catch (e) {
+      alert('Email: ' + text);
+    }
+    document.body.removeChild(ta);
+  }
+});
+

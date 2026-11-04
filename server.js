@@ -15,12 +15,49 @@ import cookieParser from 'cookie-parser';
 import multer from 'multer';
 import pg from 'pg';
 import XLSX from 'xlsx';
+import { google } from 'googleapis';
 
 const { Pool } = pg;
+
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 const sessions = new Set();
+
+function getSessionSecret() {
+  return process.env.ADMIN_PASSWORD || 'safety_inspection_secret_fallback';
+}
+
+function isValidSession(token) {
+  if (!token) return false;
+  if (sessions.has(token)) return true;
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return false;
+    const [payload, sig] = parts;
+    const expectedSig = crypto.createHmac('sha256', getSessionSecret()).update(payload).digest('hex');
+    if (sig !== expectedSig) return false;
+    const ts = parseInt(payload, 10);
+    if (Number.isFinite(ts) && (Date.now() - ts) < 7 * 24 * 60 * 60 * 1000) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function resolveTemplatePath(fileName) {
+  const candidates = [
+    path.join(__dirname, fileName),
+    path.join(process.cwd(), fileName),
+    path.join(__dirname, '..', fileName)
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return path.join(__dirname, fileName);
+}
 
 function getTables(req) {
   const mode = req.query.mode === 'fire' ? 'fire' : req.query.mode === 'firstaid' ? 'firstaid' : 'ladder';
@@ -61,10 +98,13 @@ const pool = new Pool({
 
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
+const publicDir = fs.existsSync(path.join(__dirname, 'public'))
+  ? path.join(__dirname, 'public')
+  : path.join(process.cwd(), 'public');
+app.use(express.static(publicDir));
 
 function requireAdmin(req, res, next) {
-  if (sessions.has(req.cookies.admin_session)) return next();
+  if (isValidSession(req.cookies?.admin_session)) return next();
   res.status(401).json({ error: 'Not authenticated' });
 }
 
@@ -169,20 +209,30 @@ app.post('/api/login', (req, res) => {
   const expected = process.env.ADMIN_PASSWORD || '';
   const supplied = String(req.body?.password || '');
   if (!expected || supplied !== expected) return res.status(401).json({ error: 'Invalid password' });
-  const token = crypto.randomBytes(32).toString('hex');
+  const ts = Date.now().toString();
+  const sig = crypto.createHmac('sha256', getSessionSecret()).update(ts).digest('hex');
+  const token = `${ts}.${sig}`;
   sessions.add(token);
-  res.cookie('admin_session', token, { httpOnly: true, sameSite: 'lax' });
+  const isSecure = process.env.NODE_ENV === 'production' || !!process.env.VERCEL;
+  res.cookie('admin_session', token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isSecure,
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
   res.json({ ok: true });
 });
 
 app.post('/api/logout', requireAdmin, (req, res) => {
-  sessions.delete(req.cookies.admin_session);
+  if (req.cookies?.admin_session) {
+    sessions.delete(req.cookies.admin_session);
+  }
   res.clearCookie('admin_session');
   res.json({ ok: true });
 });
 
 app.get('/api/session', (req, res) => {
-  res.json({ authenticated: sessions.has(req.cookies.admin_session) });
+  res.json({ authenticated: isValidSession(req.cookies?.admin_session) });
 });
 
 app.get('/api/questions', requireAdmin, async (req, res, next) => {
@@ -413,7 +463,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
       const finalRows = Array.from(inspectionsMap.values());
       let buffer;
       try {
-        const templatePath = path.join(__dirname, 'firstaid_template.xlsx');
+        const templatePath = resolveTemplatePath('firstaid_template.xlsx');
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.readFile(templatePath);
         const sheet = workbook.getWorksheet(1);
@@ -554,9 +604,9 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
       const finalRows = Array.from(inspectionsMap.values());
       let buffer;
       try {
-        let templatePath = path.join(__dirname, 'fire_extinguisher_template.xlsx');
+        let templatePath = resolveTemplatePath('fire_extinguisher_template.xlsx');
         if (!fs.existsSync(templatePath)) {
-          templatePath = path.join(__dirname, 'Fire Extinguisher Inspection Record Sheet.xlsx');
+          templatePath = resolveTemplatePath('Fire Extinguisher Inspection Record Sheet.xlsx');
         }
 
         const workbook = new ExcelJS.Workbook();
@@ -728,7 +778,7 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
     const finalRows = Array.from(inspectionsMap.values());
     let buffer;
     try {
-      const templatePath = path.join(__dirname, 'template.xlsx');
+      const templatePath = resolveTemplatePath('template.xlsx');
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.readFile(templatePath);
       const sheet = workbook.getWorksheet(1);
@@ -828,6 +878,290 @@ app.get('/api/export/inspections', requireAdmin, async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+/* ════════════════════════════════════════════════════════════════
+   Google Sheets Integration
+   ════════════════════════════════════════════════════════════════ */
+
+function getGoogleAuthCredentials() {
+  if (process.env.GOOGLE_SERVICE_ACCOUNT_JSON) {
+    try {
+      let raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON.trim();
+      if (!raw.startsWith('{')) {
+        raw = Buffer.from(raw, 'base64').toString('utf8');
+      }
+      const parsed = JSON.parse(raw);
+      if (parsed.client_email && (parsed.private_key || parsed.type === 'service_account')) {
+        return {
+          keyPath: null,
+          credentials: {
+            client_email: parsed.client_email,
+            private_key: parsed.private_key,
+            project_id: parsed.project_id
+          },
+          clientEmail: parsed.client_email,
+          projectId: parsed.project_id
+        };
+      }
+    } catch (e) {
+      console.error('Error parsing GOOGLE_SERVICE_ACCOUNT_JSON:', e.message);
+    }
+  }
+  const candidates = [
+    process.env.GOOGLE_SERVICE_ACCOUNT_PATH,
+    path.join(__dirname, 'google-service-account.json'),
+    path.join(process.cwd(), 'google-service-account.json'),
+    'C:\\Users\\buddhimas\\Downloads\\hsc-admin-513009-ee2995912500.json',
+    path.join(__dirname, 'hsc-admin-513009-ee2995912500.json')
+  ].filter(Boolean);
+
+  for (const candidatePath of candidates) {
+    try {
+      const resolvedPath = path.isAbsolute(candidatePath) ? candidatePath : path.resolve(__dirname, candidatePath);
+      if (fs.existsSync(resolvedPath)) {
+        const raw = fs.readFileSync(resolvedPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed.client_email && (parsed.private_key || parsed.type === 'service_account')) {
+          return {
+            keyPath: resolvedPath,
+            credentials: {
+              client_email: parsed.client_email,
+              private_key: parsed.private_key,
+              project_id: parsed.project_id
+            },
+            clientEmail: parsed.client_email,
+            projectId: parsed.project_id
+          };
+        }
+      }
+    } catch (e) {
+      // ignore and try next
+    }
+  }
+  return null;
+}
+
+function getSheetsClient(creds) {
+  const auth = new google.auth.JWT({
+    email: creds.credentials.client_email,
+    key: creds.credentials.private_key ? creds.credentials.private_key.replace(/\\n/g, '\n') : creds.credentials.private_key,
+    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+  });
+  return google.sheets({ version: 'v4', auth });
+}
+
+app.get('/api/sheets/info', requireAdmin, async (req, res) => {
+  const creds = getGoogleAuthCredentials();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
+  const targetGid = process.env.GOOGLE_SHEET_GID || '1278333149';
+  const sheetUrl = process.env.GOOGLE_SHEET_URL || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?pli=1&gid=${targetGid}#gid=${targetGid}`;
+
+  res.json({
+    configured: !!creds,
+    serviceAccountEmail: creds ? creds.clientEmail : null,
+    keyFile: creds ? (creds.keyPath ? path.basename(creds.keyPath) : 'Environment Variable') : null,
+    spreadsheetId,
+    targetGid,
+    sheetUrl
+  });
+});
+
+app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
+  const creds = getGoogleAuthCredentials();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
+  const targetGid = req.query.gid || process.env.GOOGLE_SHEET_GID || '1278333149';
+  const requestedSheetName = req.query.sheetName;
+  const sheetUrl = process.env.GOOGLE_SHEET_URL || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?pli=1&gid=${targetGid}#gid=${targetGid}`;
+
+  if (!creds) {
+    return res.status(400).json({
+      error: 'Google Service Account credentials file not found.',
+      serviceAccountFound: false,
+      sheetUrl,
+      spreadsheetId,
+      targetGid
+    });
+  }
+
+  try {
+    const sheets = getSheetsClient(creds);
+
+    // Fetch spreadsheet metadata
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const spreadsheetTitle = meta.data.properties?.title || 'Safety Inspection Sheet';
+
+    const sheetList = (meta.data.sheets || []).map(s => ({
+      title: s.properties.title,
+      sheetId: s.properties.sheetId,
+      rowCount: s.properties.gridProperties?.rowCount || 0,
+      columnCount: s.properties.gridProperties?.columnCount || 0,
+      isTarget: String(s.properties.sheetId) === String(targetGid)
+    }));
+
+    let activeSheet = null;
+    if (requestedSheetName) {
+      activeSheet = sheetList.find(s => s.title === requestedSheetName);
+    }
+    if (!activeSheet && targetGid) {
+      activeSheet = sheetList.find(s => String(s.sheetId) === String(targetGid));
+    }
+    if (!activeSheet && sheetList.length > 0) {
+      activeSheet = sheetList[0];
+    }
+
+    if (!activeSheet) {
+      return res.status(404).json({
+        error: 'No sheets found in spreadsheet.',
+        spreadsheetTitle,
+        sheets: sheetList
+      });
+    }
+
+    // Fetch values for the active sheet
+    const sheetData = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${activeSheet.title}'`,
+      valueRenderOption: 'FORMATTED_VALUE'
+    });
+
+    const rawValues = sheetData.data.values || [];
+    let headers = [];
+    let rows = [];
+
+    if (rawValues.length > 0) {
+      let headerIdx = rawValues.findIndex(r => r && r.some(c => String(c).trim().length > 0));
+      if (headerIdx === -1) headerIdx = 0;
+
+      headers = rawValues[headerIdx].map((h, i) => {
+        const val = String(h || '').trim();
+        return val.length > 0 ? val : `Column ${i + 1}`;
+      });
+
+      let maxCols = headers.length;
+      for (let i = headerIdx + 1; i < rawValues.length; i++) {
+        if (rawValues[i] && rawValues[i].length > maxCols) {
+          maxCols = rawValues[i].length;
+        }
+      }
+      while (headers.length < maxCols) {
+        headers.push(`Column ${headers.length + 1}`);
+      }
+
+      for (let i = headerIdx + 1; i < rawValues.length; i++) {
+        const row = rawValues[i] || [];
+        if (!row.some(c => c !== undefined && c !== null && String(c).trim() !== '')) {
+          continue;
+        }
+        const normalized = [];
+        for (let c = 0; c < maxCols; c++) {
+          normalized.push(row[c] !== undefined && row[c] !== null ? String(row[c]) : '');
+        }
+        rows.push(normalized);
+      }
+    }
+
+    res.json({
+      ok: true,
+      spreadsheetTitle,
+      spreadsheetId,
+      sheetUrl,
+      serviceAccountEmail: creds.clientEmail,
+      sheets: sheetList,
+      activeSheet: {
+        title: activeSheet.title,
+        sheetId: activeSheet.sheetId
+      },
+      headers,
+      rows,
+      totalRows: rows.length,
+      totalCols: headers.length,
+      lastUpdated: new Date().toISOString()
+    });
+  } catch (err) {
+    const status = err.code || (err.response && err.response.status) || 500;
+    const isPermissionDenied = status === 403 ||
+      (err.message && err.message.toLowerCase().includes('caller does not have permission'));
+
+    res.status(status === 403 ? 403 : 500).json({
+      error: isPermissionDenied
+        ? 'Google Sheets API access forbidden. The sheet has not been shared with the service account.'
+        : (err.message || 'Error communicating with Google Sheets API'),
+      isPermissionDenied,
+      serviceAccountEmail: creds.clientEmail,
+      spreadsheetId,
+      targetGid,
+      sheetUrl,
+      details: err.message
+    });
+  }
+});
+
+app.get('/api/sheets/export', requireAdmin, async (req, res, next) => {
+  const creds = getGoogleAuthCredentials();
+  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
+  const targetGid = req.query.gid || process.env.GOOGLE_SHEET_GID || '1278333149';
+  const requestedSheetName = req.query.sheetName;
+
+  if (!creds) {
+    return res.status(400).json({ error: 'Service account credentials missing' });
+  }
+
+  try {
+    const sheets = getSheetsClient(creds);
+    const meta = await sheets.spreadsheets.get({ spreadsheetId });
+    const sheetList = meta.data.sheets || [];
+
+    let activeSheet = null;
+    if (requestedSheetName) {
+      activeSheet = sheetList.find(s => s.properties.title === requestedSheetName);
+    }
+    if (!activeSheet && targetGid) {
+      activeSheet = sheetList.find(s => String(s.properties.sheetId) === String(targetGid));
+    }
+    if (!activeSheet && sheetList.length > 0) {
+      activeSheet = sheetList[0];
+    }
+
+    const sheetTitle = activeSheet ? activeSheet.properties.title : 'GoogleSheet';
+    const sheetData = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${sheetTitle}'`,
+      valueRenderOption: 'FORMATTED_VALUE'
+    });
+
+    const values = sheetData.data.values || [];
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet(sheetTitle.slice(0, 31));
+
+    values.forEach((row, rIdx) => {
+      const addedRow = worksheet.addRow(row);
+      if (rIdx === 0) {
+        addedRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        addedRow.fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FF1E293B' }
+        };
+      }
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const filename = `${sheetTitle.replace(/[^a-zA-Z0-9_-]/g, '_')}_export.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/', (req, res) => {
+  const indexPath = path.join(publicDir, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+  res.status(404).send('Not Found');
 });
 
 app.use((error, req, res, next) => {

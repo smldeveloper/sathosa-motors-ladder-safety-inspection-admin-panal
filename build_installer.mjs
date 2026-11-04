@@ -20,13 +20,10 @@ console.log('========================================================');
 console.log(' Building Sathosa Motors Safety Inspection Setup Installer');
 console.log('========================================================\n');
 
-// Step 1: Ensure dist and executables exist
-if (!fs.existsSync(BACKEND_TARGET) || !fs.existsSync(DOTNET_TARGET)) {
-  console.log('⏳ Building desktop application and backend...');
-  execSync('node build_exe.mjs', { stdio: 'inherit', cwd: PROJECT });
-} else {
-  console.log('✔ Found existing desktop app and backend in dist/');
-}
+// Step 1: Build latest desktop application and backend into dist/
+console.log('⏳ Building desktop application and backend...');
+execSync('node build_exe.mjs', { stdio: 'inherit', cwd: PROJECT });
+
 
 // Step 2: Ensure Inno Setup Compiler exists
 if (!fs.existsSync(ISCC_EXE)) {
