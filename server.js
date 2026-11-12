@@ -603,11 +603,23 @@ function getSheetsClient(creds) {
   return google.sheets({ version: 'v4', auth });
 }
 
+function getSheetRegister(req) {
+  const register = req.query.register || 'near-missing';
+  if (!['near-missing', 'chemical-spill'].includes(register)) {
+    throw Object.assign(new Error('Unknown sheet register.'), { status: 400 });
+  }
+  const chemical = register === 'chemical-spill';
+  const spreadsheetId = chemical
+    ? '1wUjuUrK9ORu7E2yqL0JCqABAW2JsSAQsruUpydJXpZ0'
+    : process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
+  const targetGid = req.query.gid || (chemical ? '833722442' : process.env.GOOGLE_SHEET_GID || '1278333149');
+  const sheetUrl = (!chemical && process.env.GOOGLE_SHEET_URL) || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?gid=${targetGid}#gid=${targetGid}`;
+  return { spreadsheetId, targetGid, sheetUrl };
+}
+
 app.get('/api/sheets/info', requireAdmin, async (req, res) => {
   const creds = getGoogleAuthCredentials();
-  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
-  const targetGid = process.env.GOOGLE_SHEET_GID || '1278333149';
-  const sheetUrl = process.env.GOOGLE_SHEET_URL || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?pli=1&gid=${targetGid}#gid=${targetGid}`;
+  const { spreadsheetId, targetGid, sheetUrl } = getSheetRegister(req);
 
   res.json({
     configured: !!creds,
@@ -621,10 +633,8 @@ app.get('/api/sheets/info', requireAdmin, async (req, res) => {
 
 app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
   const creds = getGoogleAuthCredentials();
-  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
-  const targetGid = req.query.gid || process.env.GOOGLE_SHEET_GID || '1278333149';
+  const { spreadsheetId, targetGid, sheetUrl } = getSheetRegister(req);
   const requestedSheetName = req.query.sheetName;
-  const sheetUrl = process.env.GOOGLE_SHEET_URL || `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit?pli=1&gid=${targetGid}#gid=${targetGid}`;
 
   if (!creds) {
     return res.status(400).json({
@@ -752,8 +762,7 @@ app.get('/api/sheets/data', requireAdmin, async (req, res, next) => {
 
 app.get('/api/sheets/export', requireAdmin, async (req, res, next) => {
   const creds = getGoogleAuthCredentials();
-  const spreadsheetId = process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE';
-  const targetGid = req.query.gid || process.env.GOOGLE_SHEET_GID || '1278333149';
+  const { spreadsheetId, targetGid } = getSheetRegister(req);
   const requestedSheetName = req.query.sheetName;
 
   if (!creds) {

@@ -12,6 +12,11 @@ let questionRequest = 0;
 let recordRequest = 0;
 let questionBusy = false;
 
+const sheetRegisters = {
+  sheet: { key: 'near-missing', title: 'Near Missing Accident Register', icon: '📊', spreadsheetId: '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE', gid: '1278333149' },
+  'chemical-spill': { key: 'chemical-spill', title: 'Chemical Spill Incident Record', icon: '🧪', spreadsheetId: '1wUjuUrK9ORu7E2yqL0JCqABAW2JsSAQsruUpydJXpZ0', gid: '833722442' }
+};
+
 
 document.getElementById('adminModeSelector')?.addEventListener('change', (e) => {
   showApp(e.target.value);
@@ -121,6 +126,7 @@ function showApp(mode) {
   selectedQuestion = null;
   window.currentRecords = [];
   window.adminMode = mode || 'ladder';
+  const sheetRegister = sheetRegisters[window.adminMode];
   if (q('adminModeSelector')) {
     q('adminModeSelector').value = window.adminMode;
   }
@@ -128,7 +134,7 @@ function showApp(mode) {
   if (sub) {
     sub.textContent = window.adminMode === 'fire' ? 'Sathosa Motors · Fire Extinguisher Admin' :
                       window.adminMode === 'firstaid' ? 'Sathosa Motors · First Aid Box Admin' :
-                      window.adminMode === 'sheet' ? 'Sathosa Motors · Google Sheet Viewer' :
+                      sheetRegister ? `Sathosa Motors · ${sheetRegister.title}` :
                       'Sathosa Motors · Ladder Inspection Admin';
   }
 
@@ -136,7 +142,7 @@ function showApp(mode) {
   if (icon) {
     icon.textContent = window.adminMode === 'fire' ? '🧯' :
                        window.adminMode === 'firstaid' ? '🩹' :
-                       window.adminMode === 'sheet' ? '📊' : '🪜';
+                       sheetRegister ? sheetRegister.icon : '🪜';
   }
   
   const thLocation = document.getElementById('thLocation');
@@ -181,11 +187,12 @@ function showApp(mode) {
   
   const navTabs = document.querySelector('nav.tabs');
 
-  if (window.adminMode === 'sheet') {
+  if (sheetRegister) {
     if (navTabs) navTabs.classList.add('hidden');
     document.querySelectorAll('.panel').forEach(p => p.classList.add('hidden'));
     const sPanel = q('sheetsTab');
     if (sPanel) sPanel.classList.remove('hidden');
+    resetSheetView(sheetRegister);
     loadSheetData();
   } else {
     if (navTabs) navTabs.classList.remove('hidden');
@@ -964,6 +971,7 @@ if (q('btnModeLadder')) q('btnModeLadder').addEventListener('click', () => showA
 if (q('btnModeFire')) q('btnModeFire').addEventListener('click', () => showApp('fire'));
 if (q('btnModeFirstAid')) q('btnModeFirstAid').addEventListener('click', () => showApp('firstaid'));
 if (q('btnModeSheet')) q('btnModeSheet').addEventListener('click', () => showApp('sheet'));
+q('btnModeChemicalSpill')?.addEventListener('click', () => showApp('chemical-spill'));
 
 /* ═══════════════════════════════════════════════════════════
    GOOGLE SHEET VIEWER IMPLEMENTATION
@@ -979,7 +987,36 @@ let sheetSortAsc = true;
 let sheetViewMode = 'table';
 let sheetRequest = 0;
 
+function updateSheetLinks(spreadsheetId, gid, sheetUrl) {
+  const url = sheetUrl || `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/edit?gid=${gid}#gid=${gid}`;
+  q('sheetsTab').querySelectorAll('a[href*="docs.google.com/spreadsheets"]').forEach(link => { link.href = url; });
+  if (spreadsheetId && gid !== undefined) {
+    const embedUrl = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(spreadsheetId)}/edit?gid=${gid}&widget=true&headers=false`;
+    if (q('googleSheetIframe').src !== embedUrl) q('googleSheetIframe').src = embedUrl;
+  }
+}
+
+function resetSheetView(register) {
+  currentSheetData = null;
+  currentSheetName = null;
+  sheetSearchQuery = '';
+  sheetCurrentPage = 1;
+  sheetRowsPerPage = 50;
+  sheetSortCol = -1;
+  sheetSortAsc = true;
+  q('sheetTitle').textContent = register.title;
+  q('sheetSubtitle').textContent = `${register.title} · Sheet GID: ${register.gid}`;
+  q('filterSheetSearch').value = '';
+  q('sheetPageSize').value = '50';
+  for (const id of ['sheetTabsStrip', 'sheetStatsRow', 'sheetPaginationInfo', 'sheetPaginationNav', 'sheetSearchCount', 'sheetHeaderRow']) q(id).textContent = '';
+  hide(q('sheetPermissionBox'));
+  updateSheetLinks(register.spreadsheetId, register.gid);
+  switchToSheetTableView();
+}
+
 async function loadSheetData(sheetName = null, forceRefresh = false) {
+  const register = sheetRegisters[window.adminMode];
+  if (!register) return;
   const version = viewVersion;
   const request = ++sheetRequest;
   const tableBody = q('sheetBodyRows');
@@ -1002,7 +1039,7 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
   }
 
   try {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ register: register.key });
     if (requestedName) params.set('sheetName', requestedName);
     if (forceRefresh) params.set('_refresh', Date.now());
     const url = `/sheets/data?${params}`;
@@ -1010,12 +1047,7 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
     if (version !== viewVersion || request !== sheetRequest) return;
     currentSheetData = data;
     currentSheetName = data.activeSheet ? data.activeSheet.title : null;
-    if (data.sheetUrl) {
-      q('sheetsTab').querySelectorAll('a[href*="docs.google.com/spreadsheets"]').forEach(link => { link.href = data.sheetUrl; });
-    }
-    if (data.spreadsheetId && data.activeSheet) {
-      q('googleSheetIframe').src = `https://docs.google.com/spreadsheets/d/${encodeURIComponent(data.spreadsheetId)}/edit?gid=${data.activeSheet.sheetId}&widget=true&headers=false`;
-    }
+    updateSheetLinks(data.spreadsheetId || register.spreadsheetId, data.activeSheet?.sheetId ?? register.gid);
 
     if (permBox) permBox.classList.add('hidden');
     if (subtitle) {
@@ -1057,9 +1089,10 @@ async function loadSheetData(sheetName = null, forceRefresh = false) {
     // Always fetch info to display the exact service account email and sharing helper
     if (permBox) {
       permBox.classList.remove('hidden');
-      api('GET', '/sheets/info').then(info => {
-        if (version === viewVersion && request === sheetRequest && info.serviceAccountEmail && q('saEmailDisplay')) {
-          q('saEmailDisplay').textContent = info.serviceAccountEmail;
+      api('GET', `/sheets/info?register=${register.key}`).then(info => {
+        if (version === viewVersion && request === sheetRequest) {
+          updateSheetLinks(info.spreadsheetId || register.spreadsheetId, info.targetGid ?? register.gid, info.sheetUrl);
+          if (info.serviceAccountEmail && q('saEmailDisplay')) q('saEmailDisplay').textContent = info.serviceAccountEmail;
         }
       }).catch(() => {});
     }
@@ -1323,7 +1356,9 @@ q('sheetPageSize')?.addEventListener('change', e => {
 });
 
 q('btnExportSheetXlsx')?.addEventListener('click', () => {
-  const params = new URLSearchParams();
+  const register = sheetRegisters[window.adminMode];
+  if (!register) return;
+  const params = new URLSearchParams({ register: register.key });
   if (currentSheetName) params.set('sheetName', currentSheetName);
   window.location.href = '/api/sheets/export?' + params.toString();
 });

@@ -46,7 +46,11 @@
           🧯 Fire Extinguisher Admin
         </button>
         <button id="btnModeSheet" class="btn-primary" style="padding: 20px; font-size: 1.1rem; justify-content: center; background: var(--bg); border: 2px solid var(--border); color: var(--text-1); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 10px;">
-          <span>📊 Google Sheet Viewer</span>
+          <span>📊 Near Missing Accident Register</span>
+          <span style="font-size: 0.72rem; font-weight: 700; background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.05em;">Live API</span>
+        </button>
+        <button id="btnModeChemicalSpill" class="btn-primary" style="padding: 20px; font-size: 1.1rem; justify-content: center; background: var(--bg); border: 2px solid var(--border); color: var(--text-1); cursor: pointer; display: flex; align-items: center; gap: 10px;">
+          <span>🧪 Chemical Spill Incident Record</span>
           <span style="font-size: 0.72rem; font-weight: 700; background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.05em;">Live API</span>
         </button>
       </div>
@@ -280,7 +284,7 @@
       <div class="panel-head">
         <div>
           <div style="display:flex; align-items:center; gap:8px;">
-            <h2>Google Sheet Live Viewer</h2>
+            <h2 id="sheetTitle">Near Missing Accident Register</h2>
             <span id="sheetLiveBadge" class="badge" style="background:#e0f2fe; color:#0369a1; border-color:#bae6fd; font-size:0.75rem; font-weight:700;">LIVE API</span>
           </div>
           <p id="sheetSubtitle">Spreadsheet: Sathosa Motors Inspection · Sheet GID: 1278333149</p>
@@ -407,7 +411,7 @@
 
   </div><!-- /appView -->
 
-  <script src="admin.js?v=20261104-options"></script>
+  <script src="admin.js?v=20261111-registers"></script>
 
   <!-- ERROR MODAL -->
   <div id="errorModal" class="modal">

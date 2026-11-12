@@ -179,6 +179,44 @@ test('first aid records and PDFs use box labels, dates, EPF, and no ladder heigh
   assert.doesNotMatch(pdfText, /Height|Ladder No/);
 });
 
+test('switching registers resets filters and targets chemical links even when API access fails', async t => {
+  const { window, el, calls, intercept } = await setup(t);
+  t.mock.method(window.console, 'error', () => {});
+  let resolveOld;
+  intercept(call => {
+    if (call.url.pathname === '/api/sheets/data') {
+      if (call.url.searchParams.get('register') === 'near-missing') {
+        return new Promise(resolve => { resolveOld = resolve; });
+      }
+      return { ok: false, status: 403, headers: { get: () => 'application/json' }, json: async () => ({ error: 'Access denied' }) };
+    }
+    return null;
+  });
+  assert.match(el('btnModeSheet').textContent, /Near Missing Accident Register/);
+  el('btnModeSheet').click();
+  el('filterSheetSearch').value = 'old search';
+  el('filterSheetSearch').dispatchEvent(new window.Event('input'));
+  el('btnSheetViewEmbed').click();
+  el('btnModeChemicalSpill').click();
+  await tick();
+  assert.equal(window.adminMode, 'chemical-spill');
+  assert.equal(el('sheetTitle').textContent, 'Chemical Spill Incident Record');
+  assert.equal(el('filterSheetSearch').value, '');
+  assert.equal(el('sheetTableViewContainer').classList.contains('hidden'), false);
+  assert.match(el('sheetBodyRows').textContent, /Access denied/);
+  assert.match(el('googleSheetIframe').src, /1wUjuUrK9ORu7E2yqL0JCqABAW2JsSAQsruUpydJXpZ0\/edit\?gid=833722442/);
+  el('sheetsTab').querySelectorAll('a[href*="docs.google.com/spreadsheets"]').forEach(link => {
+    assert.match(link.href, /1wUjuUrK9ORu7E2yqL0JCqABAW2JsSAQsruUpydJXpZ0/);
+  });
+  assert.ok(calls.some(call => call.url.pathname === '/api/sheets/info' && call.url.searchParams.get('register') === 'chemical-spill'));
+  resolveOld({ ok: true, headers: { get: () => 'application/json' }, json: async () => ({ headers: ['Old register'], rows: [['Old data']], sheets: [] }) });
+  await tick();
+  assert.doesNotMatch(el('sheetBodyRows').textContent, /Old data/);
+  el('btnRetrySheetAccess').click();
+  await tick();
+  assert.equal(calls.filter(call => call.url.pathname === '/api/sheets/data').at(-1).url.searchParams.get('register'), 'chemical-spill');
+});
+
 test('Google Sheet search finds zero values and worksheet selection updates embedded view', async t => {
   const { window, el, intercept } = await setup(t);
   intercept(call => call.url.pathname === '/api/sheets/data' ? {

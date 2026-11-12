@@ -89,6 +89,44 @@ test('Google Sheet data and exports quote worksheet names and report missing tab
   await json('/sheets/export?sheetName=missing', 'GET', undefined, 404);
 });
 
+test('register selection uses the chemical spreadsheet and target tab for data, info, and exports', async t => {
+  const spreadsheetId = '1wUjuUrK9ORu7E2yqL0JCqABAW2JsSAQsruUpydJXpZ0';
+  const previousCredentials = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  process.env.GOOGLE_SERVICE_ACCOUNT_JSON = JSON.stringify({ type: 'service_account', client_email: 'test@example.com', private_key: 'test-key' });
+  t.after(() => {
+    if (previousCredentials === undefined) delete process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    else process.env.GOOGLE_SERVICE_ACCOUNT_JSON = previousCredentials;
+  });
+  const calls = [];
+  t.mock.method(google, 'sheets', () => ({ spreadsheets: {
+    get: async args => {
+      calls.push(args);
+      return { data: { properties: { title: 'Chemical Spill Incident Record' }, sheets: [
+        { properties: { title: 'Other', sheetId: 1 } },
+        { properties: { title: 'Spill Records', sheetId: 833722442 } }
+      ] } };
+    },
+    values: { get: async args => { calls.push(args); return { data: { values: [['Incident'], ['Chemical spill']] } }; } }
+  } }));
+  const info = await json('/sheets/info?register=chemical-spill');
+  assert.equal(info.spreadsheetId, spreadsheetId);
+  assert.equal(info.targetGid, '833722442');
+  assert.match(info.sheetUrl, /gid=833722442/);
+  const data = await json('/sheets/data?register=chemical-spill');
+  assert.equal(data.activeSheet.sheetId, 833722442);
+  assert.equal(data.spreadsheetId, spreadsheetId);
+  const response = await request('/sheets/export?register=chemical-spill');
+  assert.equal(response.status, 200);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()));
+  assert.equal(workbook.worksheets[0].getCell('A2').value, 'Chemical spill');
+  assert.ok(calls.every(call => call.spreadsheetId === spreadsheetId));
+  assert.ok(calls.filter(call => call.range).every(call => call.range === "'Spill Records'"));
+  const original = await json('/sheets/info');
+  assert.equal(original.spreadsheetId, process.env.GOOGLE_SHEET_ID || '19GrdwA1nW6_xMfkkNzDr5GjFxQIvnzf1IitENNRS6UE');
+  for (const path of ['info', 'data', 'export']) await json(`/sheets/${path}?register=unknown`, 'GET', undefined, 400);
+});
+
 test('API workflows against isolated PostgreSQL temporary tables', { skip: process.env.TEST_DATABASE !== '1' }, async t => {
   const client = await pool.connect();
   const originalQuery = pool.query;
